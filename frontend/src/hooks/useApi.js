@@ -93,7 +93,10 @@ export function useWallet() {
   const connect = async (privateKey) => {
     setLoading(true)
     try {
-      const data = await post('/wallet/connect', { privateKey })
+      const data = await request('/wallet/connect', {
+        method: 'POST',
+        body: JSON.stringify({ privateKey }),
+      })
       setWallet(data)
       toast.success('✅ Wallet connected!')
       return data
