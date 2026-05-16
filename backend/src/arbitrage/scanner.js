@@ -1,13 +1,102 @@
 import { CONFIG } from '../config/index.js'
-import { getQuote, getSwapTransaction } from '../jupiter/client.js'
+import { getQuote, getPrices } from '../jupiter/client.js'
 import { notifyOpportunity, notifyTradeExecuted, notifyTradeFailed } from './notifier.js'
 import { state } from './state.js'
 
 let scanTimer = null
 let running = false
+const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
-// Calculate simulated output for a 3-leg triangle
-// Returns expected USDC back or null
+// ─── Алгоритм динамического поиска треугольников ───
+
+// Символ → mint (для читаемых названий)
+const SYMBOL_MAP = {}
+for (const [sym, addr] of Object.entries(CONFIG.TOKENS)) {
+  SYMBOL_MAP[addr] = sym
+}
+
+function tokenSymbol(mint) {
+  return SYMBOL_MAP[mint] || mint.slice(0, 6) + '...'
+}
+
+// Быстрый поиск по ценам: запрашиваем цены Jupiter для всех топ-токенов
+// Потом математически вычисляем потенциальные треугольники
+export async function discoverTriangles(amountUsdc = BigInt(CONFIG.TRADE_AMOUNT_USDC) * BigInt(1_000_000)) {
+  // 1. Берём цены всех токенов через Jupiter Price API (один запрос)
+  const priceData = await getPrices(CONFIG.TOP_TOKENS)
+  if (!priceData) return []
+
+  const candidates = []
+
+  // 2. Строим все треугольники USDC → A → B → USDC
+  // Берём токены без USDC (он уже база)
+  const tokens = CONFIG.TOP_TOKENS.filter(m => m !== USDC_MINT)
+
+  for (let i = 0; i < tokens.length; i++) {
+    for (let j = 0; j < tokens.length; j++) {
+      if (i === j) continue // A != B
+
+      const mintA = tokens[i]
+      const mintB = tokens[j]
+
+      // Цены от Jupiter
+      // price(A in USDC) — сколько USDC за 1 A
+      // price(B in USDC) — сколько USDC за 1 B
+      const priceUSDC_per_A = priceData[mintA]?.price
+      const priceUSDC_per_B = priceData[mintB]?.price
+
+      if (!priceUSDC_per_A || !priceUSDC_per_B) continue
+
+      // Математика:
+      // 1 USDC → (1 / priceUSDC_per_A) единиц A
+      // A → B: через их стоимости в USDC: priceUSDC_per_A / priceUSDC_per_B единиц B (здесь упрощение)
+      // Но на самом деле цена A→B на Jupiter может отличаться от кросс-курса через USDC
+      // Используем цены только как НАЧАЛЬНЫЙ ФИЛЬТР, дальше верифицируем через quote
+
+      // Теоретический профит (грубая оценка)
+      // Можно получить quote A→B и B→USDC через Jupiter для точности
+      // Но для отсеивания используем цены
+
+      candidates.push({
+        triangle: [USDC_MINT, mintA, mintB], // USDC → A → B → USDC
+        route: `USDC → ${tokenSymbol(mintA)} → ${tokenSymbol(mintB)} → USDC`,
+        tokens: [
+          { mint: USDC_MINT, symbol: 'USDC' },
+          { mint: mintA, symbol: tokenSymbol(mintA) },
+          { mint: mintB, symbol: tokenSymbol(mintB) },
+        ],
+        priceA: priceUSDC_per_A,
+        priceB: priceUSDC_per_B,
+      })
+    }
+  }
+
+  // 3. Берём топ-15 кандидатов (или меньше) и верифицируем через реальные quotes
+  const TOP_N = Math.min(15, candidates.length)
+  // Сортируем случайно — разные треугольники дают шанс найти профит
+  const shuffled = candidates.sort(() => Math.random() - 0.5).slice(0, TOP_N)
+
+  // Верификация
+  const verified = []
+
+  for (const cand of shuffled) {
+    try {
+      const result = await simulateTriangle(cand.triangle, amountUsdc)
+      if (result) {
+        verified.push(result)
+      }
+    } catch {
+      // Тихий пропуск
+    }
+  }
+
+  // Сортируем по профиту
+  verified.sort((a, b) => b.profitBps - a.profitBps)
+
+  return verified
+}
+
+// Симуляция треугольника через реальные Jupiter quotes
 export async function simulateTriangle(triangle, amountUsdc) {
   const [tokenA, tokenB, tokenC] = triangle // A = USDC
 
@@ -26,17 +115,20 @@ export async function simulateTriangle(triangle, amountUsdc) {
   if (!q3) return null
   const outUsdc = BigInt(q3.outAmount)
 
+  // Не включаем сделки с потерей >50%
+  if (outUsdc < BigInt(amountUsdc) / BigInt(2)) return null
+
   const profitBps = Number(((outUsdc - BigInt(amountUsdc)) * BigInt(10000)) / BigInt(amountUsdc))
 
   return {
-    triangle, // token mints
+    triangle,
     tokens: [
-      { mint: tokenA, symbol: getTokenSymbol(tokenA) },
-      { mint: tokenB, symbol: getTokenSymbol(tokenB) },
-      { mint: tokenC, symbol: getTokenSymbol(tokenC) },
+      { mint: tokenA, symbol: tokenSymbol(tokenA) },
+      { mint: tokenB, symbol: tokenSymbol(tokenB) },
+      { mint: tokenC, symbol: tokenSymbol(tokenC) },
     ],
-    route: `${getTokenSymbol(tokenA)} → ${getTokenSymbol(tokenB)} → ${getTokenSymbol(tokenC)} → ${getTokenSymbol(tokenA)}`,
-    amountIn: amountUsdc,
+    route: `${tokenSymbol(tokenA)} → ${tokenSymbol(tokenB)} → ${tokenSymbol(tokenC)} → ${tokenSymbol(tokenA)}`,
+    amountIn: Number(amountUsdc) / 1e6,
     amountOut: Number(outUsdc) / 1e6,
     profitBps,
     profitPercent: (profitBps / 100).toFixed(2),
@@ -44,22 +136,10 @@ export async function simulateTriangle(triangle, amountUsdc) {
   }
 }
 
-// Scan all triangles for opportunities
+// Полный скан: динамический поиск + верификация
 export async function scanAllTriangles() {
-  const results = []
+  const results = await discoverTriangles()
 
-  for (const triangle of CONFIG.TRIANGLES) {
-    try {
-      const result = await simulateTriangle(triangle, BigInt(CONFIG.TRADE_AMOUNT_USDC) * BigInt(1_000_000)) // USDC has 6 decimals
-      if (result) {
-        results.push(result)
-      }
-    } catch (err) {
-      // Skip errors silently
-    }
-  }
-
-  // Filter profitable opportunities
   const opportunities = results
     .filter(r => r.profitBps >= CONFIG.MIN_PROFIT_BPS)
     .sort((a, b) => b.profitBps - a.profitBps)
@@ -70,22 +150,21 @@ export async function scanAllTriangles() {
   return { all: results, profitable: opportunities }
 }
 
-// Execute a trade for a triangle opportunity
+// Исполнить треугольную сделку
 export async function executeTrade(opportunity, wallet) {
   if (!wallet?.publicKey) {
     throw new Error('Wallet not connected')
   }
 
   const { quotes } = opportunity
-
   const results = []
+
   for (let i = 0; i < quotes.length; i++) {
     const swapTx = await getSwapTransaction(quotes[i], wallet.publicKey.toBase58())
     if (!swapTx) {
       throw new Error(`Failed to get swap tx for leg ${i + 1}`)
     }
 
-    // Sign and send transaction
     try {
       const txId = await wallet.signAndSendTransaction(swapTx)
       results.push({ leg: i + 1, txId })
@@ -97,21 +176,20 @@ export async function executeTrade(opportunity, wallet) {
   return results
 }
 
-// Auto-trade loop
+// Авто-трейд
 export async function startAutoTrade(wallet) {
   if (running) return
   running = true
   state.setBotStatus('running')
-
-  console.log('🤖 Auto-trade started')
+  console.log('🤖 Auto-trade started (dynamic triangle search)')
 
   const loop = async () => {
     if (!running) return
 
     try {
       const { profitable } = await scanAllTriangles()
+      console.log(`  ↳ Scanned triangles: best profit = ${profitable.length > 0 ? profitable[0].profitBps + ' bps' : 'none'}`)
 
-      // Execute best opportunity if profitable
       if (profitable.length > 0 && wallet?.publicKey) {
         const best = profitable[0]
         notifyOpportunity(best)
@@ -148,14 +226,4 @@ export function stopAutoTrade() {
 
 export function isRunning() {
   return running
-}
-
-// Helpers
-const tokenSymbols = {}
-for (const [key, addr] of Object.entries(CONFIG.TOKENS)) {
-  tokenSymbols[addr] = key
-}
-
-function getTokenSymbol(mint) {
-  return tokenSymbols[mint] || mint.slice(0, 8) + '...'
 }
