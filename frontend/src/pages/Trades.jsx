@@ -1,6 +1,8 @@
 import { useState, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 
+const API = import.meta.env.VITE_API_URL || '/api'
+
 export default function Trades() {
   const { lastMessage } = useWebSocket()
   const [trades, setTrades] = useState([])
@@ -13,7 +15,7 @@ export default function Trades() {
 
   // Also fetch on mount
   useEffect(() => {
-    fetch('/api/trades')
+    fetch(`${API}/trades`)
       .then(r => r.json())
       .then(data => setTrades(data || []))
       .catch(() => {})

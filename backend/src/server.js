@@ -9,7 +9,10 @@ import { state, setWssClients } from './arbitrage/state.js'
 import { loadWallet, getWallet, signAndSendTransaction, getWalletBalance, getTokenBalance } from './utils/wallet.js'
 
 const app = express()
-app.use(cors())
+app.use(cors({
+  origin: ['http://localhost:5173', 'https://freemanvvv.github.io', 'https://solarb-frontend.onrender.com'],
+  credentials: true,
+}))
 app.use(express.json())
 
 const server = createServer(app)
