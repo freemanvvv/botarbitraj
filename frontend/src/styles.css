@@ -1,0 +1,413 @@
+/* ─── Layout ─── */
+.app {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100vh;
+  padding-bottom: 80px;
+  position: relative;
+}
+
+.header {
+  padding: 20px 16px 12px;
+  text-align: center;
+  border-bottom: 1px solid #1a1a3e;
+}
+
+.logo {
+  font-size: 24px;
+  font-weight: 800;
+  background: linear-gradient(135deg, #00ff88, #00ccff);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+.subtitle {
+  font-size: 12px;
+  color: #666;
+  display: block;
+  margin-top: 2px;
+}
+
+.main {
+  padding: 16px;
+}
+
+.page {
+  animation: fadeIn .2s ease;
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; transform: translateY(8px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+/* ─── Bottom Nav ─── */
+.bottom-nav {
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  justify-content: space-around;
+  background: #0f0f23;
+  border-top: 1px solid #1a1a3e;
+  padding: 8px 0;
+  max-width: 480px;
+  margin: 0 auto;
+  z-index: 100;
+}
+
+.nav-item {
+  font-size: 22px;
+  padding: 6px 12px;
+  border-radius: 12px;
+  transition: all .15s;
+  text-decoration: none;
+}
+
+.nav-item.active {
+  background: rgba(0, 255, 136, 0.1);
+  transform: scale(1.15);
+}
+
+/* ─── Status ─── */
+.status-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: #888;
+  margin-bottom: 16px;
+}
+
+.indicator {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+
+.indicator.online { background: #00ff88; box-shadow: 0 0 8px #00ff8844; }
+.indicator.offline { background: #ff4444; }
+
+/* ─── Token Grid ─── */
+.token-grid {
+  display: grid;
+  grid-template-columns: repeat(2, 1fr);
+  gap: 12px;
+}
+
+.token-card {
+  background: #1a1a3e;
+  border-radius: 16px;
+  padding: 16px;
+  border: 1px solid #2a2a5e;
+  transition: border .15s;
+}
+
+.token-card:active {
+  border-color: #00ff8866;
+}
+
+.token-symbol {
+  font-weight: 700;
+  font-size: 14px;
+  margin-bottom: 4px;
+}
+
+.token-price {
+  font-size: 20px;
+  font-weight: 600;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+}
+
+.sparkline {
+  margin-top: 8px;
+  height: 50px;
+}
+
+/* ─── Scanner ─── */
+.flex-between {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 16px;
+}
+
+.opp-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.opp-card {
+  background: #1a1a3e;
+  border-radius: 14px;
+  padding: 14px;
+  border: 1px solid #2a2a5e;
+}
+
+.opp-card.profitable {
+  border-color: #00ff8844;
+  background: #1a2a2e;
+}
+
+.opp-route {
+  font-weight: 600;
+  font-size: 14px;
+  font-family: 'SF Mono', 'Fira Code', monospace;
+  margin-bottom: 6px;
+}
+
+.opp-profit {
+  font-size: 22px;
+  font-weight: 700;
+}
+
+.opp-profit.positive { color: #00ff88; }
+.opp-profit.negative { color: #ff4444; }
+
+.opp-detail {
+  font-size: 12px;
+  color: #888;
+  margin-top: 4px;
+}
+
+.profit-title, .sub-heading {
+  margin: 16px 0 10px;
+  font-size: 14px;
+  color: #aaa;
+}
+
+.sub-heading {
+  margin-top: 24px;
+}
+
+/* ─── Wallet ─── */
+.wallet-card {
+  background: #1a1a3e;
+  border-radius: 16px;
+  padding: 24px;
+  border: 1px solid #2a2a5e;
+  text-align: center;
+}
+
+.wallet-status {
+  font-weight: 700;
+  font-size: 18px;
+  margin-bottom: 16px;
+}
+
+.wallet-status.connected { color: #00ff88; }
+.wallet-status.disconnected { color: #ff4444; }
+
+.wallet-address, .wallet-balance {
+  font-family: 'SF Mono', monospace;
+  margin: 8px 0;
+  font-size: 13px;
+}
+
+.label { color: #888; margin-right: 8px; }
+.value { color: #fff; font-weight: 600; }
+
+.key-input-area {
+  margin-top: 16px;
+}
+
+.key-input {
+  width: 100%;
+  background: #0f0f23;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 12px;
+  color: #e0e0e0;
+  font-family: 'SF Mono', monospace;
+  font-size: 12px;
+  resize: none;
+}
+
+.key-input:focus { outline: none; border-color: #00ff88; }
+
+.key-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 12px;
+  justify-content: center;
+}
+
+/* ─── Bot Control ─── */
+.bot-card {
+  background: #1a1a3e;
+  border-radius: 16px;
+  padding: 24px;
+  border: 1px solid #2a2a5e;
+  text-align: center;
+}
+
+.bot-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-bottom: 20px;
+}
+
+.bot-indicator {
+  width: 12px;
+  height: 12px;
+  border-radius: 50%;
+}
+
+.bot-indicator.running {
+  background: #00ff88;
+  box-shadow: 0 0 16px #00ff8866;
+  animation: pulse 2s infinite;
+}
+
+.bot-indicator.idle { background: #666; }
+
+@keyframes pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.5; }
+}
+
+.bot-status-text {
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.bot-stats {
+  display: flex;
+  justify-content: center;
+  gap: 24px;
+  margin-bottom: 20px;
+}
+
+.stat {
+  text-align: center;
+}
+
+.stat-value {
+  display: block;
+  font-size: 16px;
+  font-weight: 700;
+  color: #00ff88;
+}
+
+.stat-label {
+  font-size: 11px;
+  color: #888;
+}
+
+.bot-wallet-status {
+  margin-bottom: 20px;
+  font-size: 13px;
+}
+
+.wallet-ok { color: #00ff88; }
+.wallet-missing { color: #ff6644; }
+
+/* ─── Trades ─── */
+.trade-list {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.trade-card {
+  background: #1a1a3e;
+  border-radius: 14px;
+  padding: 14px;
+  border: 1px solid #2a2a5e;
+}
+
+.trade-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
+}
+
+.trade-route {
+  font-weight: 600;
+  font-size: 13px;
+  font-family: 'SF Mono', monospace;
+}
+
+.trade-profit {
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.trade-profit.positive { color: #00ff88; }
+.trade-profit.negative { color: #ff4444; }
+
+.trade-time {
+  font-size: 11px;
+  color: #666;
+  margin-bottom: 6px;
+}
+
+.trade-tx {
+  font-size: 11px;
+  color: #888;
+  font-family: 'SF Mono', monospace;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+/* ─── Buttons ─── */
+.btn {
+  background: #2a2a5e;
+  border: none;
+  color: #e0e0e0;
+  padding: 12px 24px;
+  border-radius: 12px;
+  font-size: 15px;
+  font-weight: 600;
+  cursor: pointer;
+  transition: all .15s;
+}
+
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+.btn-sm {
+  padding: 8px 16px;
+  font-size: 13px;
+}
+
+.btn-primary {
+  background: linear-gradient(135deg, #00cc88, #00aaff);
+  color: #000;
+}
+
+.btn-danger {
+  background: linear-gradient(135deg, #ff4444, #cc3333);
+  color: #fff;
+}
+
+.btn-ghost {
+  background: transparent;
+  border: 1px solid #333;
+  color: #888;
+}
+
+.btn-large {
+  width: 100%;
+  padding: 16px;
+  font-size: 18px;
+}
+
+/* ─── Utils ─── */
+.muted {
+  color: #666;
+  font-size: 14px;
+}
+
+h2 {
+  font-size: 20px;
+  margin-bottom: 16px;
+}

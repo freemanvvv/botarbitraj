@@ -1,0 +1,23 @@
+{
+  "name": "solana-arbitrage-bot",
+  "version": "1.0.0",
+  "description": "Solana triangular arbitrage bot with Jupiter",
+  "main": "src/server.js",
+  "type": "module",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "node --watch src/server.js",
+    "test": "node src/test.js"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.98.0",
+    "@solana/spl-token": "^0.4.9",
+    "ws": "^8.18.0",
+    "express": "^4.21.0",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "node-fetch": "^3.3.2",
+    "bs58": "^6.0.0",
+    "node-cron": "^3.0.3"
+  }
+}
