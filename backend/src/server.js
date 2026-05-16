@@ -13,7 +13,8 @@ app.use(cors())
 app.use(express.json())
 
 const server = createServer(app)
-const wss = new WebSocketServer({ server })
+// Accept WS connections at /api/ws (used by production frontend)
+const wss = new WebSocketServer({ server, path: '/api/ws' })
 
 // WebSocket: keep track of clients
 const clients = new Set()

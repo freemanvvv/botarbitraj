@@ -1,6 +1,12 @@
 import { useState, useEffect, useCallback } from 'react'
 
-export function useWebSocket(url = `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/ws`) {
+// Vite proxy handles /ws in dev. In production, use VITE_WS_URL.
+function getDefaultWsUrl() {
+  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL
+  return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/ws`
+}
+
+export function useWebSocket(url = getDefaultWsUrl()) {
   const [connected, setConnected] = useState(false)
   const [lastMessage, setLastMessage] = useState(null)
 
