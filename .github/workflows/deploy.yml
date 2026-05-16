@@ -28,6 +28,7 @@ jobs:
           cd frontend
           npm ci
           npm run build
+          cp dist/index.html dist/404.html
         env:
           NODE_ENV: production
           VITE_API_URL: https://botarbitraj-1.onrender.com/api
