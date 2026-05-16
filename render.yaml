@@ -21,3 +21,5 @@ services:
         value: 50
       - key: SCAN_INTERVAL_MS
         value: 3000
+      - key: BOT_TOKEN
+        sync: false

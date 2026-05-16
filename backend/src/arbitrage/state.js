@@ -6,6 +6,7 @@ let trades = []
 let walletConnected = false
 let walletAddress = null
 let binanceConfigured = false
+let notifyChatId = null
 let wssClients = []
 
 export const state = {
@@ -40,6 +41,9 @@ export const state = {
   getBinanceConfigured: () => binanceConfigured,
   setBinanceConfigured: (v) => { binanceConfigured = v; broadcast() },
 
+  getNotifyChatId: () => notifyChatId,
+  setNotifyChatId: (id) => { notifyChatId = id },
+
   getFullState: () => ({
     scanResults,
     opportunities,
@@ -55,6 +59,8 @@ export const state = {
 export function setWssClients(clients) {
   wssClients = clients
 }
+
+export { notifyChatId }
 
 function broadcast() {
   const data = JSON.stringify({ type: 'state', payload: state.getFullState() })

@@ -20,6 +20,9 @@ export const CONFIG = {
   // Server
   PORT: process.env.PORT || 3001,
 
+  // Telegram
+  BOT_TOKEN: process.env.BOT_TOKEN || null,
+
   // Token addresses (Solana mainnet) — топ ликвидных токенов
   TOKENS: {
     USDC: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
