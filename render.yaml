@@ -1,12 +1,10 @@
 services:
   - type: web
     name: solarb-backend
-    runtime: node
+    runtime: image
     repo: https://github.com/freemanvvv/botarbitraj
     branch: main
-    rootDir: backend
-    buildCommand: npm ci --prod
-    startCommand: node src/server.js
+    dockerfilePath: ./Dockerfile
     healthCheckPath: /api/state
     envVars:
       - key: PORT
