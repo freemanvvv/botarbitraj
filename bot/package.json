@@ -1,0 +1,14 @@
+{
+  "name": "solana-arbitrage-bot-telegram",
+  "version": "1.0.0",
+  "description": "Telegram bot for Solana Arbitrage Mini App",
+  "type": "module",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "node-telegram-bot-api": "^0.66.0",
+    "dotenv": "^16.4.5"
+  }
+}

@@ -1,0 +1,25 @@
+services:
+  - type: web
+    name: solarb-backend
+    runtime: image
+    repo: https://github.com/freemanvvv/botarbitraj
+    branch: main
+    dockerfilePath: ./Dockerfile
+    healthCheckPath: /api/state
+    envVars:
+      - key: PORT
+        value: 3001
+      - key: SOLANA_RPC
+        sync: false
+      - key: PRIVATE_KEY
+        sync: false
+      - key: MIN_PROFIT_BPS
+        value: 30
+      - key: TRADE_AMOUNT_USDC
+        value: 10
+      - key: SLIPPAGE_BPS
+        value: 50
+      - key: SCAN_INTERVAL_MS
+        value: 3000
+      - key: BOT_TOKEN
+        sync: false
