@@ -5,6 +5,7 @@ let botStatus = 'idle' // idle | running
 let trades = []
 let walletConnected = false
 let walletAddress = null
+let binanceConfigured = false
 let wssClients = []
 
 export const state = {
@@ -36,6 +37,9 @@ export const state = {
 
   getWalletAddress: () => walletAddress,
 
+  getBinanceConfigured: () => binanceConfigured,
+  setBinanceConfigured: (v) => { binanceConfigured = v; broadcast() },
+
   getFullState: () => ({
     scanResults,
     opportunities,
@@ -43,6 +47,7 @@ export const state = {
     trades: trades.slice(-20),
     walletConnected,
     walletAddress,
+    binanceConfigured,
   }),
 }
 

@@ -1,9 +1,8 @@
-import { useEffect } from 'react'
 import { useBot, useWallet } from '../hooks/useApi'
 
 export default function BotControl() {
-  const { wallet, refresh: refreshWallet } = useWallet()
-  const { status, loading, start, stop, refresh } = useBot()
+  const { wallet } = useWallet()
+  const { status, loading, start, stop } = useBot()
 
   const isRunning = status.running
 
@@ -17,38 +16,45 @@ export default function BotControl() {
 
   return (
     <div className="page">
-      <h2>🤖 Bot Control</h2>
+      <div className="info-block">
+        <p>🤖 <strong>Управление ботом.</strong> Запускает автоматическое сканирование и исполнение сделок.</p>
+        <p>Параметры: сканирование каждые 3с, мин. профит 30 bps (0.3%), проскальзывание 50 bps (0.5%).</p>
+      </div>
 
       <div className="bot-card">
         <div className="bot-status-row">
           <span className={`bot-indicator ${isRunning ? 'running' : 'idle'}`} />
           <span className="bot-status-text">
-            {isRunning ? '🟢 Running' : '⚪ Idle'}
+            {isRunning ? '🟢 Запущен' : '⏸ Остановлен'}
           </span>
         </div>
 
         {isRunning && (
           <div className="bot-stats">
             <div className="stat">
-              <span className="stat-value">3s</span>
-              <span className="stat-label">Scan interval</span>
+              <span className="stat-value">3с</span>
+              <span className="stat-label">Интервал</span>
             </div>
             <div className="stat">
-              <span className="stat-value">50 bps</span>
+              <span className="stat-value">50</span>
               <span className="stat-label">Slippage</span>
             </div>
             <div className="stat">
-              <span className="stat-value">30 bps</span>
-              <span className="stat-label">Min profit</span>
+              <span className="stat-value">30</span>
+              <span className="stat-label">Мин. профит</span>
             </div>
           </div>
         )}
 
         <div className="bot-wallet-status">
           {wallet?.connected ? (
-            <span className="wallet-ok">✅ Wallet: {wallet.address?.slice(0, 6)}...</span>
+            <span className="wallet-ok" style={{ color: '#00ff88' }}>
+              ✅ Кошелёк: {wallet.address?.slice(0, 6)}...
+            </span>
           ) : (
-            <span className="wallet-missing">❌ Wallet not connected</span>
+            <span className="wallet-missing" style={{ color: '#ff6644' }}>
+              ❌ Кошелёк не подключён (нужен для сделок)
+            </span>
           )}
         </div>
 
@@ -57,7 +63,7 @@ export default function BotControl() {
           onClick={handleToggle}
           disabled={loading || !wallet?.connected}
         >
-          {loading ? '...' : isRunning ? '⏹ Stop Bot' : '▶ Start Bot'}
+          {loading ? '⏳' : isRunning ? '⏹ Остановить' : '▶ Запустить бота'}
         </button>
       </div>
     </div>

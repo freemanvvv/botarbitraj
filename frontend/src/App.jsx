@@ -2,31 +2,34 @@ import { Routes, Route, Link, useLocation } from 'react-router-dom'
 import Dashboard from './pages/Dashboard'
 import Scanner from './pages/Scanner'
 import Wallet from './pages/Wallet'
-import Trades from './pages/Trades'
 import BotControl from './pages/BotControl'
+import Trades from './pages/Trades'
+import Spreads from './pages/Spreads'
 
 export default function App() {
   const location = useLocation()
 
   const navItems = [
-    { path: '/', label: '📊', title: 'Dashboard' },
-    { path: '/scanner', label: '🔍', title: 'Scanner' },
-    { path: '/wallet', label: '💳', title: 'Wallet' },
-    { path: '/bot', label: '🤖', title: 'Bot' },
-    { path: '/trades', label: '📜', title: 'Trades' },
+    { path: '/', label: '📊', title: 'Курсы' },
+    { path: '/scanner', label: '🔍', title: 'Сканер' },
+    { path: '/spreads', label: '⚡', title: 'Спреды' },
+    { path: '/wallet', label: '💳', title: 'Кошелёк' },
+    { path: '/bot', label: '🤖', title: 'Бот' },
+    { path: '/trades', label: '📜', title: 'Сделки' },
   ]
 
   return (
     <div className="app">
       <header className="header">
         <h1 className="logo">SolArb</h1>
-        <span className="subtitle">Solana Arbitrage Bot</span>
+        <span className="subtitle">Solana Arbitrage Bot · треугольный арбитраж</span>
       </header>
 
       <main className="main">
         <Routes>
           <Route path="/" element={<Dashboard />} />
           <Route path="/scanner" element={<Scanner />} />
+          <Route path="/spreads" element={<Spreads />} />
           <Route path="/wallet" element={<Wallet />} />
           <Route path="/bot" element={<BotControl />} />
           <Route path="/trades" element={<Trades />} />

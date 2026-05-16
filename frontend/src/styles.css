@@ -11,6 +11,7 @@
   padding: 20px 16px 12px;
   text-align: center;
   border-bottom: 1px solid #1a1a3e;
+  background: linear-gradient(180deg, #0f0f23 0%, #13133a 100%);
 }
 
 .logo {
@@ -20,11 +21,12 @@
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
   background-clip: text;
+  letter-spacing: -0.5px;
 }
 
 .subtitle {
-  font-size: 12px;
-  color: #666;
+  font-size: 11px;
+  color: #555;
   display: block;
   margin-top: 2px;
 }
@@ -34,11 +36,11 @@
 }
 
 .page {
-  animation: fadeIn .2s ease;
+  animation: fadeIn .25s ease;
 }
 
 @keyframes fadeIn {
-  from { opacity: 0; transform: translateY(8px); }
+  from { opacity: 0; transform: translateY(10px); }
   to { opacity: 1; transform: translateY(0); }
 }
 
@@ -52,23 +54,35 @@
   justify-content: space-around;
   background: #0f0f23;
   border-top: 1px solid #1a1a3e;
-  padding: 8px 0;
+  padding: 6px 0 env(safe-area-inset-bottom, 6px);
   max-width: 480px;
   margin: 0 auto;
   z-index: 100;
 }
 
 .nav-item {
-  font-size: 22px;
-  padding: 6px 12px;
-  border-radius: 12px;
+  font-size: 20px;
+  padding: 8px 14px;
+  border-radius: 14px;
   transition: all .15s;
   text-decoration: none;
+  position: relative;
 }
 
 .nav-item.active {
-  background: rgba(0, 255, 136, 0.1);
-  transform: scale(1.15);
+  background: rgba(0, 255, 136, 0.08);
+}
+
+.nav-item.active::after {
+  content: '';
+  position: absolute;
+  bottom: -2px;
+  left: 50%;
+  transform: translateX(-50%);
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: #00ff88;
 }
 
 /* ─── Status ─── */
@@ -77,68 +91,102 @@
   align-items: center;
   gap: 8px;
   font-size: 12px;
-  color: #888;
-  margin-bottom: 16px;
+  color: #666;
+  margin-bottom: 12px;
+  padding: 0 4px;
 }
 
 .indicator {
-  width: 8px;
-  height: 8px;
+  width: 7px;
+  height: 7px;
   border-radius: 50%;
   display: inline-block;
 }
 
 .indicator.online { background: #00ff88; box-shadow: 0 0 8px #00ff8844; }
-.indicator.offline { background: #ff4444; }
+.indicator.offline { background: #ff4444; box-shadow: 0 0 8px #ff444444; }
 
 /* ─── Token Grid ─── */
 .token-grid {
   display: grid;
   grid-template-columns: repeat(2, 1fr);
-  gap: 12px;
+  gap: 10px;
 }
 
 .token-card {
-  background: #1a1a3e;
+  background: linear-gradient(135deg, #1a1a3e 0%, #161630 100%);
   border-radius: 16px;
   padding: 16px;
   border: 1px solid #2a2a5e;
-  transition: border .15s;
+  transition: all .15s;
 }
 
 .token-card:active {
   border-color: #00ff8866;
+  transform: scale(0.98);
+}
+
+.token-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 6px;
 }
 
 .token-symbol {
   font-weight: 700;
   font-size: 14px;
-  margin-bottom: 4px;
+  color: #ccc;
 }
+
+.token-change {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 2px 6px;
+  border-radius: 6px;
+}
+
+.token-change.up { color: #00ff88; background: rgba(0,255,136,0.08); }
+.token-change.down { color: #ff4444; background: rgba(255,68,68,0.08); }
 
 .token-price {
   font-size: 20px;
   font-weight: 600;
-  font-family: 'SF Mono', 'Fira Code', monospace;
+  font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace;
+  color: #fff;
+}
+
+.token-sub {
+  font-size: 11px;
+  color: #555;
+  margin-top: 2px;
 }
 
 .sparkline {
   margin-top: 8px;
-  height: 50px;
+  height: 45px;
 }
 
 /* ─── Scanner ─── */
-.flex-between {
+.section-header {
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
+}
+
+.section-header h3 {
+  font-size: 14px;
+  color: #aaa;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
 }
 
 .opp-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .opp-card {
@@ -146,18 +194,24 @@
   border-radius: 14px;
   padding: 14px;
   border: 1px solid #2a2a5e;
+  transition: all .15s;
 }
 
 .opp-card.profitable {
   border-color: #00ff8844;
-  background: #1a2a2e;
+  background: linear-gradient(135deg, #1a2a1e 0%, #1a1a3e 100%);
+}
+
+.opp-card.neutral {
+  opacity: 0.7;
 }
 
 .opp-route {
   font-weight: 600;
-  font-size: 14px;
+  font-size: 13px;
   font-family: 'SF Mono', 'Fira Code', monospace;
   margin-bottom: 6px;
+  color: #ddd;
 }
 
 .opp-profit {
@@ -169,46 +223,41 @@
 .opp-profit.negative { color: #ff4444; }
 
 .opp-detail {
-  font-size: 12px;
-  color: #888;
+  font-size: 11px;
+  color: #666;
   margin-top: 4px;
 }
 
-.profit-title, .sub-heading {
-  margin: 16px 0 10px;
-  font-size: 14px;
-  color: #aaa;
-}
-
-.sub-heading {
-  margin-top: 24px;
-}
-
 /* ─── Wallet ─── */
-.wallet-card {
-  background: #1a1a3e;
+.wallet-card, .card {
+  background: linear-gradient(135deg, #1a1a3e 0%, #161630 100%);
   border-radius: 16px;
-  padding: 24px;
+  padding: 20px;
   border: 1px solid #2a2a5e;
+  margin-bottom: 12px;
+}
+
+.wallet-card {
   text-align: center;
 }
 
 .wallet-status {
   font-weight: 700;
   font-size: 18px;
-  margin-bottom: 16px;
+  margin-bottom: 12px;
 }
 
 .wallet-status.connected { color: #00ff88; }
-.wallet-status.disconnected { color: #ff4444; }
+.wallet-status.disconnected { color: #ff6666; }
 
 .wallet-address, .wallet-balance {
   font-family: 'SF Mono', monospace;
-  margin: 8px 0;
+  margin: 6px 0;
   font-size: 13px;
+  color: #aaa;
 }
 
-.label { color: #888; margin-right: 8px; }
+.label { color: #555; margin-right: 8px; }
 .value { color: #fff; font-weight: 600; }
 
 .key-input-area {
@@ -217,7 +266,7 @@
 
 .key-input {
   width: 100%;
-  background: #0f0f23;
+  background: #0a0a1a;
   border: 1px solid #333;
   border-radius: 12px;
   padding: 12px;
@@ -225,6 +274,7 @@
   font-family: 'SF Mono', monospace;
   font-size: 12px;
   resize: none;
+  transition: border .15s;
 }
 
 .key-input:focus { outline: none; border-color: #00ff88; }
@@ -236,13 +286,81 @@
   justify-content: center;
 }
 
+/* ─── Binance ─── */
+.binance-section {
+  margin-top: 20px;
+}
+
+.binance-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 12px;
+}
+
+.binance-header h3 {
+  font-size: 15px;
+  font-weight: 700;
+  color: #f0b90b;
+}
+
+.binance-card {
+  background: linear-gradient(135deg, #1a1a2e 0%, #1f1a16 100%);
+  border-radius: 14px;
+  padding: 16px;
+  border: 1px solid #3a3020;
+  margin-bottom: 10px;
+}
+
+.binance-card .binance-tag {
+  display: inline-block;
+  background: #f0b90b;
+  color: #000;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 6px;
+  border-radius: 4px;
+  margin-bottom: 8px;
+}
+
+.spread-row {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  padding: 8px 0;
+  border-bottom: 1px solid #1a1a2e;
+}
+
+.spread-row:last-child { border-bottom: none; }
+
+.spread-token {
+  font-weight: 700;
+  font-size: 14px;
+  min-width: 50px;
+}
+
+.spread-prices {
+  text-align: right;
+  font-size: 12px;
+  color: #888;
+}
+
+.spread-value {
+  font-weight: 700;
+  font-size: 16px;
+}
+
+.spread-positive { color: #00ff88; }
+.spread-negative { color: #ff6666; }
+
 /* ─── Bot Control ─── */
 .bot-card {
-  background: #1a1a3e;
+  background: linear-gradient(135deg, #1a1a3e 0%, #161630 100%);
   border-radius: 16px;
   padding: 24px;
   border: 1px solid #2a2a5e;
   text-align: center;
+  margin-bottom: 12px;
 }
 
 .bot-status-row {
@@ -265,7 +383,7 @@
   animation: pulse 2s infinite;
 }
 
-.bot-indicator.idle { background: #666; }
+.bot-indicator.idle { background: #555; }
 
 @keyframes pulse {
   0%, 100% { opacity: 1; }
@@ -296,8 +414,8 @@
 }
 
 .stat-label {
-  font-size: 11px;
-  color: #888;
+  font-size: 10px;
+  color: #555;
 }
 
 .bot-wallet-status {
@@ -305,14 +423,11 @@
   font-size: 13px;
 }
 
-.wallet-ok { color: #00ff88; }
-.wallet-missing { color: #ff6644; }
-
 /* ─── Trades ─── */
 .trade-list {
   display: flex;
   flex-direction: column;
-  gap: 10px;
+  gap: 8px;
 }
 
 .trade-card {
@@ -326,13 +441,14 @@
   display: flex;
   justify-content: space-between;
   align-items: center;
-  margin-bottom: 6px;
+  margin-bottom: 4px;
 }
 
 .trade-route {
   font-weight: 600;
   font-size: 13px;
   font-family: 'SF Mono', monospace;
+  color: #ddd;
 }
 
 .trade-profit {
@@ -341,21 +457,21 @@
 }
 
 .trade-profit.positive { color: #00ff88; }
-.trade-profit.negative { color: #ff4444; }
+.trade-profit.negative { color: #ff6666; }
 
 .trade-time {
   font-size: 11px;
-  color: #666;
+  color: #555;
   margin-bottom: 6px;
 }
 
 .trade-tx {
   font-size: 11px;
-  color: #888;
+  color: #555;
   font-family: 'SF Mono', monospace;
   display: flex;
   flex-wrap: wrap;
-  gap: 8px;
+  gap: 6px;
 }
 
 /* ─── Buttons ─── */
@@ -369,14 +485,16 @@
   font-weight: 600;
   cursor: pointer;
   transition: all .15s;
+  -webkit-tap-highlight-color: transparent;
 }
 
 .btn:active { transform: scale(0.97); }
-.btn:disabled { opacity: 0.4; cursor: not-allowed; }
+.btn:disabled { opacity: 0.35; cursor: not-allowed; }
 
 .btn-sm {
-  padding: 8px 16px;
-  font-size: 13px;
+  padding: 8px 14px;
+  font-size: 12px;
+  border-radius: 10px;
 }
 
 .btn-primary {
@@ -395,19 +513,75 @@
   color: #888;
 }
 
+.btn-gold {
+  background: linear-gradient(135deg, #f0b90b, #d49a00);
+  color: #000;
+}
+
 .btn-large {
   width: 100%;
   padding: 16px;
   font-size: 18px;
+  border-radius: 14px;
+}
+
+/* ─── Info Blocks ─── */
+.info-block {
+  background: #161630;
+  border-radius: 12px;
+  padding: 14px;
+  margin-bottom: 12px;
+  border: 1px solid #1a1a3e;
+  font-size: 13px;
+  line-height: 1.6;
+}
+
+.info-block p {
+  margin-bottom: 6px;
+  color: #aaa;
+}
+
+.info-block strong {
+  color: #ddd;
+}
+
+.info-block .emoji {
+  font-size: 16px;
+}
+
+/* ─── Section Divider ─── */
+.section-divider {
+  height: 1px;
+  background: linear-gradient(90deg, transparent, #2a2a5e, transparent);
+  margin: 20px 0;
 }
 
 /* ─── Utils ─── */
 .muted {
-  color: #666;
+  color: #555;
   font-size: 14px;
 }
 
 h2 {
   font-size: 20px;
   margin-bottom: 16px;
+  font-weight: 700;
 }
+
+h2 .hint {
+  font-size: 12px;
+  color: #555;
+  font-weight: 400;
+}
+
+.tag {
+  display: inline-block;
+  font-size: 10px;
+  font-weight: 700;
+  padding: 2px 8px;
+  border-radius: 6px;
+  margin-left: 6px;
+}
+
+.tag-sol { background: #9945ff33; color: #9945ff; }
+.tag-dex { background: #00ff8833; color: #00ff88; }

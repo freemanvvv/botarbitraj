@@ -7,6 +7,7 @@ import { getPrices } from './jupiter/client.js'
 import { scanAllTriangles, startAutoTrade, stopAutoTrade, isRunning } from './arbitrage/scanner.js'
 import { state, setWssClients } from './arbitrage/state.js'
 import { loadWallet, getWallet, signAndSendTransaction, getWalletBalance, getTokenBalance } from './utils/wallet.js'
+import * as binance from './arbitrage/binance.js'
 
 const app = express()
 app.use(cors({
@@ -110,6 +111,85 @@ app.get('/api/wallet', async (req, res) => {
     address: wallet.publicKey.toBase58(),
     balanceSol: balance,
   })
+})
+
+// ─── Binance API ───
+
+// Configure Binance API
+app.post('/api/binance/configure', async (req, res) => {
+  try {
+    const { apiKey: key, secretKey: secret } = req.body
+    if (!key || !secret) {
+      return res.status(400).json({ error: 'API key and secret required' })
+    }
+    binance.configure(key, secret)
+    state.setBinanceConfigured(true)
+    res.json({ configured: true })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Get Binance prices + CEX-DEX spreads
+app.get('/api/binance/spreads', async (req, res) => {
+  try {
+    const prices = await binance.getPrices()
+    const mints = Object.values(CONFIG.TOKENS)
+    const jupiterRes = await fetch(`${CONFIG.JUPITER_PRICE_API}?ids=${mints.join(',')}`)
+    const jupiterData = await jupiterRes.json()
+
+    // Map symbols to tokens
+    const symbolMap = {
+      SOLUSDT: 'SOL',
+      RAYUSDT: 'RAY',
+      JUPUSDT: 'JUP',
+      BONKUSDT: 'BONK',
+      PYTHUSDT: 'PYTH',
+    }
+
+    const spreads = {}
+    for (const [symbol, binancePrice] of Object.entries(prices)) {
+      const token = symbolMap[symbol]
+      if (!token) continue
+      const mint = CONFIG.TOKENS[token]
+      const jupiterPrice = parseFloat(jupiterData.data?.[mint]?.price || 0)
+
+      spreads[token] = {
+        binance: binancePrice,
+        jupiter: jupiterPrice || null,
+        spreadBps: jupiterPrice ? Math.round(((jupiterPrice - binancePrice) / binancePrice) * 10000) : null,
+      }
+    }
+
+    res.json(spreads)
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+// Binance balance
+app.get('/api/binance/balance', async (req, res) => {
+  try {
+    if (!binance.isConfigured()) {
+      return res.json({ connected: false })
+    }
+    const account = await binance.getBalance()
+    const balances = account.balances
+      .filter(b => parseFloat(b.free) > 0 || parseFloat(b.locked) > 0)
+      .map(b => ({
+        asset: b.asset,
+        free: parseFloat(b.free),
+        locked: parseFloat(b.locked),
+        total: parseFloat(b.free) + parseFloat(b.locked),
+      }))
+    res.json({ connected: true, balances })
+  } catch (err) {
+    res.status(500).json({ error: err.message })
+  }
+})
+
+app.get('/api/binance/status', (req, res) => {
+  res.json({ configured: binance.isConfigured() })
 })
 
 // Start bot

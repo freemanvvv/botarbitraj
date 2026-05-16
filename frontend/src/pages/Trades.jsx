@@ -13,7 +13,6 @@ export default function Trades() {
     }
   }, [lastMessage])
 
-  // Also fetch on mount
   useEffect(() => {
     fetch(`${API}/trades`)
       .then(r => r.json())
@@ -23,10 +22,21 @@ export default function Trades() {
 
   return (
     <div className="page">
-      <h2>📜 Trade History</h2>
+      <div className="info-block">
+        <p>📜 <strong>История сделок</strong> — все выполненные автоматические трейды.</p>
+        <p>Здесь отображаются маршруты, профит и хэши транзакций в Solana.</p>
+      </div>
+
+      <h2>📜 История сделок</h2>
 
       {trades.length === 0 ? (
-        <p className="muted">No trades yet. Start the bot to see results.</p>
+        <div className="card" style={{ textAlign: 'center', padding: 40 }}>
+          <p style={{ fontSize: 32, marginBottom: 8 }}>📭</p>
+          <p className="muted">Сделок пока нет</p>
+          <p className="muted" style={{ fontSize: 12, marginTop: 4 }}>
+            Запусти бота — первая сделка появится при найденном профите
+          </p>
+        </div>
       ) : (
         <div className="trade-list">
           {[...trades].reverse().map((trade, i) => (
@@ -38,12 +48,12 @@ export default function Trades() {
                 </span>
               </div>
               <div className="trade-time">
-                {new Date(trade.timestamp).toLocaleString()}
+                {new Date(trade.timestamp).toLocaleString('ru-RU')}
               </div>
               <div className="trade-tx">
                 {trade.result?.map((r, j) => (
-                  <span key={j} className="tx-link">
-                    Leg {r.leg}: {r.txId?.slice(0, 12)}...
+                  <span key={j} style={{ background: '#0a0a1a', padding: '2px 6px', borderRadius: 4 }}>
+                    Leg {r.leg}: {r.txId?.slice(0, 10)}...
                   </span>
                 ))}
               </div>
