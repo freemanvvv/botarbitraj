@@ -1,5 +1,5 @@
 import { CONFIG } from '../config/index.js'
-import { getQuote, getPrices } from '../jupiter/client.js'
+import { getQuote } from '../jupiter/client.js'
 import { notifyOpportunity, notifyTradeExecuted, notifyTradeFailed } from './notifier.js'
 import { state } from './state.js'
 
@@ -7,9 +7,6 @@ let scanTimer = null
 let running = false
 const USDC_MINT = 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v'
 
-// ─── Алгоритм динамического поиска треугольников ───
-
-// Символ → mint (для читаемых названий)
 const SYMBOL_MAP = {}
 for (const [sym, addr] of Object.entries(CONFIG.TOKENS)) {
   SYMBOL_MAP[addr] = sym
@@ -19,64 +16,67 @@ function tokenSymbol(mint) {
   return SYMBOL_MAP[mint] || mint.slice(0, 6) + '...'
 }
 
-// Быстрый поиск по ценам: запрашиваем цены Jupiter для всех топ-токенов
-// Потом математически вычисляем потенциальные треугольники
-export async function discoverTriangles(amountUsdc = BigInt(CONFIG.TRADE_AMOUNT_USDC) * BigInt(1_000_000)) {
-  // 1. Берём цены всех токенов через Jupiter Price API (один запрос)
-  const priceData = await getPrices(CONFIG.TOP_TOKENS)
-  if (!priceData) return []
+// Получить цену токена через quote (1 USDC → token)
+async function getTokenPrice(mint) {
+  if (mint === USDC_MINT) return 1
+  const q = await getQuote(USDC_MINT, mint, BigInt(1_000_000)) // 1 USDC
+  if (!q) return null
+  return Number(q.outAmount) / 1_000_000 // цена: сколько единиц токена за 1 USDC
+}
 
+// Динамический поиск треугольников через quotes
+export async function discoverTriangles(amountUsdc = BigInt(CONFIG.TRADE_AMOUNT_USDC) * BigInt(1_000_000)) {
+  const tokens = CONFIG.TOP_TOKENS.filter(m => m !== USDC_MINT)
   const candidates = []
 
-  // 2. Строим все треугольники USDC → A → B → USDC
-  // Берём токены без USDC (он уже база)
-  const tokens = CONFIG.TOP_TOKENS.filter(m => m !== USDC_MINT)
+  // 1. Получаем цены всех топ-токенов (1 quote на токен)
+  const prices = {}
+  for (const mint of tokens) {
+    const price = await getTokenPrice(mint)
+    if (price) prices[mint] = price
+  }
 
-  for (let i = 0; i < tokens.length; i++) {
-    for (let j = 0; j < tokens.length; j++) {
-      if (i === j) continue // A != B
+  if (Object.keys(prices).length < 2) return []
 
-      const mintA = tokens[i]
-      const mintB = tokens[j]
+  // 2. Строим все треугольники и теоретически оцениваем профит
+  const tokenList = Object.keys(prices)
+  for (let i = 0; i < tokenList.length; i++) {
+    for (let j = 0; j < tokenList.length; j++) {
+      if (i === j) continue
 
-      // Цены от Jupiter
-      // price(A in USDC) — сколько USDC за 1 A
-      // price(B in USDC) — сколько USDC за 1 B
-      const priceUSDC_per_A = priceData[mintA]?.price
-      const priceUSDC_per_B = priceData[mintB]?.price
+      const a = tokenList[i]
+      const b = tokenList[j]
+      const pA = prices[a]
+      const pB = prices[b]
 
-      if (!priceUSDC_per_A || !priceUSDC_per_B) continue
+      // Теоретическая оценка: 1 USDC → a → b → USDC
+      // Leg1: 1 USDC → pA единиц A
+      // Leg2: pA единиц A → pA * (pB/pA) = pB единиц B (кросс-курс)
+      // Leg3: pB единиц B → pB * (1) = pB USDC
+      // Но для точности нужен quote A→B
+      // Используем только как начальный фильтр
 
-      // Математика:
-      // 1 USDC → (1 / priceUSDC_per_A) единиц A
-      // A → B: через их стоимости в USDC: priceUSDC_per_A / priceUSDC_per_B единиц B (здесь упрощение)
-      // Но на самом деле цена A→B на Jupiter может отличаться от кросс-курса через USDC
-      // Используем цены только как НАЧАЛЬНЫЙ ФИЛЬТР, дальше верифицируем через quote
-
-      // Теоретический профит (грубая оценка)
-      // Можно получить quote A→B и B→USDC через Jupiter для точности
-      // Но для отсеивания используем цены
+      const theoreticalBps = 0 // Пропускаем теоретическую оценку, идём сразу к quotes
 
       candidates.push({
-        triangle: [USDC_MINT, mintA, mintB], // USDC → A → B → USDC
-        route: `USDC → ${tokenSymbol(mintA)} → ${tokenSymbol(mintB)} → USDC`,
+        triangle: [USDC_MINT, a, b],
+        route: `USDC → ${tokenSymbol(a)} → ${tokenSymbol(b)} → USDC`,
         tokens: [
           { mint: USDC_MINT, symbol: 'USDC' },
-          { mint: mintA, symbol: tokenSymbol(mintA) },
-          { mint: mintB, symbol: tokenSymbol(mintB) },
+          { mint: a, symbol: tokenSymbol(a) },
+          { mint: b, symbol: tokenSymbol(b) },
         ],
-        priceA: priceUSDC_per_A,
-        priceB: priceUSDC_per_B,
+        priceA: pA,
+        priceB: pB,
+        theoreticalBps,
       })
     }
   }
 
-  // 3. Берём топ-15 кандидатов (или меньше) и верифицируем через реальные quotes
-  const TOP_N = Math.min(15, candidates.length)
-  // Сортируем случайно — разные треугольники дают шанс найти профит
-  const shuffled = candidates.sort(() => Math.random() - 0.5).slice(0, TOP_N)
+  // 3. Берём топ-8 кандидатов и верифицируем через реальные quotes
+  const TOP_N = Math.min(6, candidates.length)
+  const shuffled = [...candidates].sort(() => Math.random() - 0.5).slice(0, TOP_N)
 
-  // Верификация
   const verified = []
 
   for (const cand of shuffled) {
@@ -92,16 +92,15 @@ export async function discoverTriangles(amountUsdc = BigInt(CONFIG.TRADE_AMOUNT_
 
   // Сортируем по профиту
   verified.sort((a, b) => b.profitBps - a.profitBps)
-
   return verified
 }
 
-// Симуляция треугольника через реальные Jupiter quotes
+// Симуляция треугольника через 3 реальных Jupiter quote
 export async function simulateTriangle(triangle, amountUsdc) {
-  const [tokenA, tokenB, tokenC] = triangle // A = USDC
+  const [tokenA, tokenB, tokenC] = triangle
 
   // Leg 1: USDC → tokenB
-  const q1 = await getQuote(tokenA, tokenB, amountUsdc)
+  const q1 = await getQuote(tokenA, tokenB, amountUsdc.toString())
   if (!q1) return null
   const outB = BigInt(q1.outAmount)
 
@@ -115,7 +114,7 @@ export async function simulateTriangle(triangle, amountUsdc) {
   if (!q3) return null
   const outUsdc = BigInt(q3.outAmount)
 
-  // Не включаем сделки с потерей >50%
+  // Пропускаем если потеря >50%
   if (outUsdc < BigInt(amountUsdc) / BigInt(2)) return null
 
   const profitBps = Number(((outUsdc - BigInt(amountUsdc)) * BigInt(10000)) / BigInt(amountUsdc))
@@ -136,7 +135,7 @@ export async function simulateTriangle(triangle, amountUsdc) {
   }
 }
 
-// Полный скан: динамический поиск + верификация
+// Полный скан
 export async function scanAllTriangles() {
   const results = await discoverTriangles()
 

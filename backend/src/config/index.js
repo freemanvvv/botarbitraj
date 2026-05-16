@@ -4,8 +4,8 @@ export const CONFIG = {
   SOLANA_RPC: process.env.SOLANA_RPC || 'https://api.mainnet-beta.solana.com',
   SOLANA_WSS: process.env.SOLANA_WSS || 'wss://api.mainnet-beta.solana.com',
 
-  // Jupiter API
-  JUPITER_API: 'https://quote-api.jup.ag/v6',
+  // Jupiter API (swap v1 — актуальная версия)
+  JUPITER_API: 'https://api.jup.ag/swap/v1',
   JUPITER_PRICE_API: 'https://api.jup.ag/price/v2',
 
   // Wallet
