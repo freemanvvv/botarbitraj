@@ -21,20 +21,24 @@ export function loadWallet(privateKey) {
     if (privateKey.startsWith('[')) {
       decoded = Uint8Array.from(JSON.parse(privateKey))
     }
-    // 2. Base58 — полный secret key (88 символов, начинается с цифры или буквы)
-    else if (/^[1-9A-HJ-NP-Za-km-z]{87,88}$/.test(privateKey.trim())) {
-      decoded = bs58.decode(privateKey.trim())
-    }
-    // 3. Hex строка
+    // 2. Hex строка (128 hex символов = 64 байта полный secret key)
     else if (/^[0-9a-fA-F]{128}$/.test(privateKey.trim())) {
       decoded = Buffer.from(privateKey.trim(), 'hex')
     }
     else {
-      // Попробуем как base58 в любом случае
+      // Всё остальное — base58 (32 байта raw key или 64 байта полный secret key)
       decoded = bs58.decode(privateKey.trim())
     }
 
-    wallet = Keypair.fromSecretKey(decoded)
+    // 32 байта — это raw private key, не полный secret key
+    if (decoded.length === 32) {
+      wallet = Keypair.fromSeed(decoded)
+    } else if (decoded.length === 64) {
+      wallet = Keypair.fromSecretKey(decoded)
+    } else {
+      throw new Error(`Неверная длина ключа: ${decoded.length} байт (нужно 32 или 64)`)
+    }
+
     console.log(`✅ Wallet loaded: ${wallet.publicKey.toBase58()}`)
     return wallet
   } catch (err) {
