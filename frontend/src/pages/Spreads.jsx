@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import toast from 'react-hot-toast'
 
-const BASE = import.meta.env.VITE_API_URL || '/api'
+const BASE = 'https://botarbitraj-1.onrender.com/api'
 
 export default function Spreads() {
   const [spreads, setSpreads] = useState([])

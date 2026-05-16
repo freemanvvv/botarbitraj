@@ -1,7 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useWebSocket } from '../hooks/useWebSocket'
 
-const API = import.meta.env.VITE_API_URL || '/api'
+const API = 'https://botarbitraj-1.onrender.com/api'
 
 export default function Trades() {
   const { lastMessage } = useWebSocket()

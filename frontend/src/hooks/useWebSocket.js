@@ -2,7 +2,7 @@ import { useState, useEffect, useCallback } from 'react'
 
 // Vite proxy handles /ws in dev. In production, use VITE_WS_URL.
 function getDefaultWsUrl() {
-  if (import.meta.env.VITE_WS_URL) return import.meta.env.VITE_WS_URL
+  if ("wss://botarbitraj-1.onrender.com/api/ws") return "wss://botarbitraj-1.onrender.com/api/ws"
   return `${window.location.protocol === 'https:' ? 'wss:' : 'ws:'}//${window.location.host}/api/ws`
 }
 
