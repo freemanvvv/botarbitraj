@@ -1,141 +1,148 @@
-import { useState, useEffect, useCallback } from 'react'
-import { useApi } from '../hooks/useApi'
+import { useState, useEffect } from 'react'
+import toast from 'react-hot-toast'
 
-const API = import.meta.env.VITE_API_URL || '/api'
+const BASE = import.meta.env.VITE_API_URL || '/api'
 
 export default function Spreads() {
-  const { get, post, loading } = useApi()
-  const [spreads, setSpreads] = useState(null)
-  const [binanceKey, setBinanceKey] = useState('')
-  const [binanceSecret, setBinanceSecret] = useState('')
+  const [spreads, setSpreads] = useState([])
+  const [loading, setLoading] = useState(false)
+  const [keys, setKeys] = useState({ apiKey: '', apiSecret: '' })
+  const [configuring, setConfiguring] = useState(false)
   const [configured, setConfigured] = useState(false)
-  const [showConfig, setShowConfig] = useState(false)
 
-  const fetchSpreads = useCallback(async () => {
-    const data = await get('/binance/spreads')
-    setSpreads(data)
-  }, [get])
-
-  const checkStatus = useCallback(async () => {
+  const fetchSpreads = async () => {
+    setLoading(true)
     try {
-      const data = await get('/binance/status')
-      setConfigured(data.configured)
-      if (data.configured) fetchSpreads()
-    } catch { /* ignore */ }
-  }, [get, fetchSpreads])
-
-  useEffect(() => {
-    checkStatus()
-    const timer = setInterval(checkStatus, 15000)
-    return () => clearInterval(timer)
-  }, [])
-
-  const handleConfigure = async () => {
-    if (!binanceKey.trim() || !binanceSecret.trim()) return
-    await post('/binance/configure', { apiKey: binanceKey.trim(), secretKey: binanceSecret.trim() })
-    setBinanceKey('')
-    setBinanceSecret('')
-    setShowConfig(false)
-    await checkStatus()
+      const res = await fetch(`${BASE}/binance/spreads`)
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({ error: '?' }))
+        throw new Error(err.error || 'Не настроены Binance ключи')
+      }
+      const data = await res.json()
+      setSpreads(data)
+    } catch (err) {
+      toast.error(err.message)
+      setSpreads([])
+    }
+    setLoading(false)
   }
+
+  const checkStatus = async () => {
+    try {
+      const res = await fetch(`${BASE}/binance/status`)
+      const data = await res.json()
+      setConfigured(data.configured)
+    } catch { /* ignore */ }
+  }
+
+  const configureKeys = async () => {
+    if (!keys.apiKey || !keys.apiSecret) {
+      toast.error('Введи API Key и Secret')
+      return
+    }
+    setConfiguring(true)
+    try {
+      const res = await fetch(`${BASE}/binance/configure`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(keys),
+      })
+      if (!res.ok) throw new Error('Ошибка конфигурации')
+      toast.success('✅ Binance ключи сохранены')
+      setConfigured(true)
+      setKeys({ apiKey: '', apiSecret: '' })
+    } catch (err) {
+      toast.error(err.message)
+    }
+    setConfiguring(false)
+  }
+
+  useEffect(() => { checkStatus() }, [])
 
   return (
     <div className="page">
+      {/* ОБЪЯСНЕНИЕ */}
       <div className="info-block">
-        <p>⚡ <strong>CEX ↔ DEX спреды</strong> — сравнивает цены Binance (CEX) и Jupiter (Solana DEX).</p>
-        <p>Положительный спред = на Binance дешевле. Можно купить на CEX, перевести и продать на DEX.</p>
+        <p><strong>⚡ CEX-DEX спреды</strong> — это разница цен между биржами.</p>
+        <p style={{ fontSize: 13, color: '#999', marginTop: 6 }}>
+          Мы сравниваем цены Jupiter (DEX, Solana) с ценами Binance (CEX).
+          Если спред больше нуля — на одной бирже дешевле, чем на другой.
+          Это потенциальная возможность для кросс-биржевого арбитража.
+        </p>
       </div>
 
-      <div className="binance-section">
-        <div className="binance-header">
-          <span style={{ fontSize: 20 }}>🟡</span>
-          <h3>Binance CEX</h3>
-          {configured && <span className="tag tag-sol">Подключено</span>}
+      <h2>🔑 Настройка Binance</h2>
+      {configured ? (
+        <div className="card" style={{ textAlign: 'center' }}>
+          <p style={{ color: '#4ade80' }}>✅ Binance API подключён</p>
         </div>
+      ) : (
+        <div className="card">
+          <p className="muted" style={{ fontSize: 12, marginBottom: 8 }}>
+            Введи API ключи от Binance (Read-only, без вывода средств).
+            <br />Создаются в Binance → API Management.
+          </p>
+          <input
+            className="input"
+            placeholder="API Key"
+            value={keys.apiKey}
+            onChange={e => setKeys({ ...keys, apiKey: e.target.value })}
+          />
+          <input
+            className="input"
+            type="password"
+            placeholder="API Secret"
+            value={keys.apiSecret}
+            onChange={e => setKeys({ ...keys, apiSecret: e.target.value })}
+          />
+          <button className="btn btn-primary" onClick={configureKeys} disabled={configuring} style={{ width: '100%' }}>
+            {configuring ? '⏳ Сохраняю...' : 'Сохранить ключи'}
+          </button>
+        </div>
+      )}
 
-        {!configured && !showConfig && (
-          <div className="card" style={{ textAlign: 'center' }}>
-            <p className="muted" style={{ marginBottom: 12 }}>Binance API ключи не настроены</p>
-            <button className="btn btn-gold btn-sm" onClick={() => setShowConfig(true)}>
-              🔑 Подключить Binance
-            </button>
-          </div>
-        )}
-
-        {showConfig && (
-          <div className="card">
-            <p style={{ fontSize: 12, color: '#888', marginBottom: 12 }}>
-              API ключ создаётся в Binance → API Management (только чтение, без вывода)
-            </p>
-            <input
-              className="key-input"
-              placeholder="API Key"
-              value={binanceKey}
-              onChange={e => setBinanceKey(e.target.value)}
-              style={{ marginBottom: 8 }}
-            />
-            <input
-              className="key-input"
-              placeholder="Secret Key"
-              value={binanceSecret}
-              onChange={e => setBinanceSecret(e.target.value)}
-              type="password"
-              style={{ marginBottom: 8 }}
-            />
-            <div className="key-actions">
-              <button className="btn btn-sm btn-gold" onClick={handleConfigure} disabled={loading}>
-                {loading ? '⏳' : 'Подключить'}
-              </button>
-              <button className="btn btn-sm btn-ghost" onClick={() => setShowConfig(false)}>
-                Отмена
-              </button>
-            </div>
-          </div>
-        )}
-
-        {configured && (
-          <>
-            <div className="section-header">
-              <h3>Спреды Binance → Jupiter</h3>
-              <button className="btn btn-sm btn-ghost" onClick={fetchSpreads} disabled={loading}>
-                🔄
-              </button>
-            </div>
-
-            {spreads ? (
-              Object.entries(spreads).map(([token, data]) => (
-                <div key={token} className="binance-card">
-                  <span className="binance-tag">CEX → DEX</span>
-                  <div className="spread-row">
-                    <span className="spread-token">{token}</span>
-                    <div className="spread-prices">
-                      <div>
-                        Binance: <strong>${data.binance?.toFixed(4)}</strong>
-                      </div>
-                      <div>
-                        Jupiter: <strong>${data.jupiter?.toFixed(4)}</strong>
-                      </div>
-                    </div>
-                  </div>
-                  <div className="spread-row" style={{ borderBottom: 'none' }}>
-                    <span style={{ fontSize: 12, color: '#888' }}>Спред</span>
-                    <span className={`spread-value ${data.spreadBps > 0 ? 'spread-positive' : 'spread-negative'}`}>
-                      {data.spreadBps > 0 ? '+' : ''}{data.spreadBps} bps
-                    </span>
-                  </div>
-                </div>
-              ))
-            ) : (
-              <p className="muted">Загрузка...</p>
-            )}
-          </>
-        )}
+      <h2>📊 Спреды CEX/DEX</h2>
+      <p className="section-desc">
+        Таблица показывает цены на Jupiter (DEX) и Binance (CEX), а также разницу в %.
+      </p>
+      <div style={{ marginBottom: 12 }}>
+        <button className="btn btn-primary" onClick={fetchSpreads} disabled={loading} style={{ width: '100%' }}>
+          {loading ? '⏳ Загрузка...' : '📊 Показать спреды'}
+        </button>
       </div>
 
-      <div className="info-block" style={{ marginTop: 16 }}>
-        <p>💡 <strong>Совет:</strong> Положительный спред {`>`} 50 bps уже может быть интересен, но учитывай:
-        комиссию Binance (0.1%), газ Solana (~0.00001 SOL), и время перевода между CEX и DEX.</p>
-      </div>
+      {spreads.length > 0 && (
+        <table className="spreads-table">
+          <thead>
+            <tr>
+              <th>Пара</th>
+              <th>DEX (Jupiter)</th>
+              <th>CEX (Binance)</th>
+              <th>Спред</th>
+            </tr>
+          </thead>
+          <tbody>
+            {spreads.map((s, i) => (
+              <tr key={i}>
+                <td>{s.symbol}</td>
+                <td>${typeof s.dexPrice === 'number' ? s.dexPrice.toFixed(4) : '—'}</td>
+                <td>${typeof s.cexPrice === 'number' ? s.cexPrice.toFixed(4) : '—'}</td>
+                <td style={{ color: (s.spreadPercent || 0) > 0 ? '#4ade80' : '#f87171' }}>
+                  {s.spreadPercent != null ? `${s.spreadPercent.toFixed(2)}%` : '—'}
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {spreads.length === 0 && !loading && (
+        <div className="card" style={{ textAlign: 'center', padding: 30 }}>
+          <p className="muted">
+            {configured ? '📭 Нажми "Показать спреды"' : '🔑 Сначала подключи Binance API'}
+          </p>
+        </div>
+      )}
     </div>
   )
 }
