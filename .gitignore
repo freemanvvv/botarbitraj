@@ -1,0 +1,38 @@
+## Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+dist/
+
+## Node
+node_modules/
+webapp/frontend/dist/
+
+## IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+## OS
+.DS_Store
+Thumbs.db
+
+## Media
+*.pdf
+*.csv
+*.ifc
+!src/normbase/sources.csv
+
+## Project
+data/chroma_db/
+data/normbase_raw/
+data/normbase_text/
+data/normbase_cache/
+output/
+*.zip
+*.log
+
+## Keep
+!.gitkeep

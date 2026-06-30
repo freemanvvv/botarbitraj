@@ -1,0 +1,10 @@
+openai>=1.0
+chromadb>=1.5
+llama-index>=0.14
+llama-index-embeddings-openai>=0.6
+pdfplumber>=0.11
+python-docx>=1.1
+weasyprint>=60
+openpyxl>=3.1
+ifcopenshell>=0.8
+ezdxf>=1.4
