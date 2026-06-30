@@ -67,12 +67,12 @@ def _d2(ifc, x, y):
     return ifc.create_entity("IfcDirection", (float(x), float(y)))
 
 
-def _make_placement(ifc, x, y, z, x_axis=None, z_axis=None):
+def _make_placement(ifc, x, y, z, x_axis=None, z_axis=None, relative_to=None):
     origin = _cp3(ifc, x, y, z)
     z_dir = z_axis or _d3(ifc, 0, 0, 1)
     x_dir = x_axis or _d3(ifc, 1, 0, 0)
     a3 = ifc.create_entity("IfcAxis2Placement3D", origin, z_dir, x_dir)
-    return ifc.create_entity("IfcLocalPlacement", None, a3)
+    return ifc.create_entity("IfcLocalPlacement", relative_to, a3)
 
 
 def _make_placement_2d(ifc, x, y):
@@ -131,16 +131,13 @@ def create_max_building(
     proj = ifc.create_entity("IfcProject", g(), None, name)
 
     # ─── Geometry context ───
-    ctx = ifc.create_entity("IfcGeometricRepresentationContext")
-    ctx.ContextIdentifier = "Model"
-    ctx.ContextType = "Model"
-    ctx.CoordinateSpaceDimension = 3
+    wcs = ifc.create_entity("IfcAxis2Placement3D",
+        _cp3(ifc, 0, 0, 0), _d3(ifc, 0, 0, 1), _d3(ifc, 1, 0, 0))
+    ctx = ifc.create_entity("IfcGeometricRepresentationContext",
+        "Model", "Model", 3, 1e-5, wcs, None)
 
-    # Второй контекст для плана
-    ctx_plan = ifc.create_entity("IfcGeometricRepresentationContext")
-    ctx_plan.ContextIdentifier = "Plan"
-    ctx_plan.ContextType = "Plan"
-    ctx_plan.CoordinateSpaceDimension = 2
+    ctx_plan = ifc.create_entity("IfcGeometricRepresentationContext",
+        "Plan", "Plan", 2, 1e-5, wcs, None)
 
     # ─── Units (мм для согласованности с местными нормами) ───
     unit_m = ifc.create_entity("IfcSIUnit", None, "LENGTHUNIT", None, "METRE")
@@ -273,12 +270,13 @@ def create_max_building(
         _assign_material(ifc, wf, "кирпич керамический")
         
 
-        # Проёмы на фасаде
+        # Проёмы на фасаде (placement relative to front wall)
         if add_windows or entrance:
             for win in windows_front:
                 op = ifc.create_entity("IfcOpeningElement", g())
                 op.Name = f"Окно фасад {win.x_offset}"
-                op.ObjectPlacement = _make_placement(ifc, win.x_offset, 0, win.sill_height)
+                op.ObjectPlacement = _make_placement(ifc, win.x_offset, 0, win.sill_height,
+                                                     relative_to=wf.ObjectPlacement)
                 op_prof = _make_box_profile(ifc, win.width, wall_thickness)
                 op_ext = _make_extrusion(ifc, op_prof, win.height)
                 op_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [op_ext])
@@ -287,21 +285,21 @@ def create_max_building(
                                   RelatingBuildingElement=wf, RelatedOpeningElement=op)
                 storey_elements.append(op)
 
-                # Само окно
                 win_elem = ifc.create_entity("IfcWindow", g(), None,
                                               f"Окно {win.width}x{win.height}")
                 win_elem.OverallWidth = win.width
                 win_elem.OverallHeight = win.height
-                win_elem.ObjectPlacement = _make_placement(ifc, win.x_offset + win.width/2, -0.05, win.sill_height)
+                win_elem.ObjectPlacement = _make_placement(ifc, win.x_offset + win.width/2, 0, win.sill_height,
+                                                           relative_to=wf.ObjectPlacement)
                 _assign_material(ifc, win_elem, "стеклопакет")
-                
                 storey_elements.append(win_elem)
 
-        # Front door
+        # Front door (placement relative to front wall)
         if entrance:
             op = ifc.create_entity("IfcOpeningElement", g())
             op.Name = "Входная дверь"
-            op.ObjectPlacement = _make_placement(ifc, entrance.x_offset, 0, 0.0)
+            op.ObjectPlacement = _make_placement(ifc, entrance.x_offset, 0, 0.0,
+                                                 relative_to=wf.ObjectPlacement)
             op_prof = _make_box_profile(ifc, entrance.width, wall_thickness)
             op_ext = _make_extrusion(ifc, op_prof, entrance.height)
             op_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [op_ext])
@@ -313,9 +311,9 @@ def create_max_building(
             door_elem = ifc.create_entity("IfcDoor", g(), None, "Входная дверь")
             door_elem.OverallWidth = entrance.width
             door_elem.OverallHeight = entrance.height
-            door_elem.ObjectPlacement = _make_placement(ifc, entrance.x_offset + entrance.width/2, -0.05, 0.0)
+            door_elem.ObjectPlacement = _make_placement(ifc, entrance.x_offset + entrance.width/2, 0, 0.0,
+                                                        relative_to=wf.ObjectPlacement)
             _assign_material(ifc, door_elem, "сталь")
-            
             storey_elements.append(door_elem)
 
         storey_elements.append(wf)
@@ -335,7 +333,8 @@ def create_max_building(
             for win in windows_back:
                 op = ifc.create_entity("IfcOpeningElement", g())
                 op.Name = f"Окно задняя {win.x_offset}"
-                op.ObjectPlacement = _make_placement(ifc, win.x_offset, 0, win.sill_height)
+                op.ObjectPlacement = _make_placement(ifc, win.x_offset, 0, win.sill_height,
+                                                     relative_to=wb.ObjectPlacement)
                 op_prof = _make_box_profile(ifc, win.width, wall_thickness)
                 op_ext = _make_extrusion(ifc, op_prof, win.height)
                 op_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [op_ext])
@@ -348,7 +347,8 @@ def create_max_building(
                                               f"Окно {win.width}x{win.height}")
                 win_elem.OverallWidth = win.width
                 win_elem.OverallHeight = win.height
-                win_elem.ObjectPlacement = _make_placement(ifc, win.x_offset + win.width/2, -0.05, win.sill_height)
+                win_elem.ObjectPlacement = _make_placement(ifc, win.x_offset + win.width/2, 0, win.sill_height,
+                                                           relative_to=wb.ObjectPlacement)
                 _assign_material(ifc, win_elem, "стеклопакет")
                 storey_elements.append(win_elem)
 
@@ -367,7 +367,9 @@ def create_max_building(
             for win in windows_left:
                 op = ifc.create_entity("IfcOpeningElement", g())
                 op.Name = f"Окно левая {win.x_offset}"
-                op.ObjectPlacement = _make_placement(ifc, 0, win.x_offset, win.sill_height, _d3(ifc, 0, 1, 0))
+                # Placement relative to left wall: local X along wall length (world Y)
+                op.ObjectPlacement = _make_placement(ifc, win.x_offset, 0, win.sill_height,
+                                                     relative_to=wl.ObjectPlacement)
                 op_prof = _make_box_profile(ifc, win.width, wall_thickness)
                 op_ext = _make_extrusion(ifc, op_prof, win.height)
                 op_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [op_ext])
@@ -391,7 +393,9 @@ def create_max_building(
             for win in windows_right:
                 op = ifc.create_entity("IfcOpeningElement", g())
                 op.Name = f"Окно правая {win.x_offset}"
-                op.ObjectPlacement = _make_placement(ifc, 0, win.x_offset, win.sill_height, _d3(ifc, 0, 1, 0))
+                # Placement relative to right wall: local X along wall length (world Y)
+                op.ObjectPlacement = _make_placement(ifc, win.x_offset, 0, win.sill_height,
+                                                     relative_to=wr.ObjectPlacement)
                 op_prof = _make_box_profile(ifc, win.width, wall_thickness)
                 op_ext = _make_extrusion(ifc, op_prof, win.height)
                 op_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [op_ext])
@@ -453,21 +457,28 @@ def create_max_building(
         roof_slope = 0.4  # tan(угла) = высота/половина ширины
         ridge_height = (width / 2) * roof_slope
 
+        roof_elems = []
         for side_name, side_sign in [("Левая", 1), ("Правая", -1)]:
             roof_slab = ifc.create_entity("IfcSlab", g(), None,
                                            f"Скат крыши {side_name}")
             roof_slab.PredefinedType = "ROOF"
-            roof_slab.ObjectPlacement = _make_placement(ifc, -overhang, width / 2, roof_z,
-                                                         _d3(ifc, 1, 0, 0),
-                                                         _d3(ifc, 0, side_sign * roof_slope, 1))
-            r_prof = _make_box_profile(ifc, roof_length, math.sqrt((width/2)**2 + ridge_height**2) + 0.3)
+            # Placement: at ridge center, tilted outward
+            # Z-axis tilted: (0, side_sign*slope, 1) normalised
+            norm = math.sqrt(roof_slope**2 + 1)
+            roof_slab.ObjectPlacement = _make_placement(
+                ifc, -overhang, width / 2, roof_z,
+                _d3(ifc, 1, 0, 0),
+                _d3(ifc, 0, side_sign * roof_slope / norm, 1.0 / norm),
+            )
+            slope_len = math.sqrt((width / 2) ** 2 + ridge_height**2) + 0.3
+            r_prof = _make_box_profile(ifc, roof_length, slope_len)
             r_ext = _make_extrusion(ifc, r_prof, slab_thickness)
             r_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [r_ext])
             roof_slab.Representation = r_rep
             _assign_material(ifc, roof_slab, "металлочерепица")
-            storey_elements = [roof_slab]
-            ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
-                              RelatedElements=storey_elements, RelatingStructure=storey)
+            roof_elems.append(roof_slab)
+        ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
+                          RelatedElements=roof_elems, RelatingStructure=storey)
     else:
         # Плоская крыша
         flat_roof = ifc.create_entity("IfcSlab", g(), None, "Плоская кровля")
@@ -478,9 +489,8 @@ def create_max_building(
         r_rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [r_ext])
         flat_roof.Representation = r_rep
         _assign_material(ifc, flat_roof, "рубероид")
-        storey_elements = [flat_roof]
         ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
-                          RelatedElements=storey_elements, RelatingStructure=storey)
+                          RelatedElements=[flat_roof], RelatingStructure=storey)
 
     # ─── Сохранение ───
     ts = datetime.now().strftime("%Y%m%d_%H%M%S")

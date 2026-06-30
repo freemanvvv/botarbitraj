@@ -437,169 +437,66 @@ def model_info(filename: str):
 
 @app.get("/api/model/view/{filename}")
 def model_view(filename: str):
-    """IFC → JSON-треугольники для Three.js. Парсит стены, окна, двери, крышу с поворотом."""
+    """IFC → JSON-треугольники для Three.js.
+    Использует ifcopenshell.geom для корректной тесселяции с булевыми операциями.
+    IFC Z-up → Three.js Y-up: переставляем (x,y,z) → (x,z,y) и инвертируем обход треугольников.
+    """
     try:
         import ifcopenshell
-        import math
+        import ifcopenshell.geom
+
         filepath = OUTPUT_DIR / filename
         if not filepath.exists():
             raise HTTPException(404, "Файл не найден")
         ifc = ifcopenshell.open(str(filepath))
 
-        def make_box(cx, cy, cz, w, d, h):
-            """8 вершин (центрировано), 12 треугольников."""
-            x0, y0, z0 = cx - w/2, cy - d/2, cz
-            x1, y1, z1 = cx + w/2, cy + d/2, cz + h
-            v = [x0,y0,z0, x1,y0,z0, x1,y1,z0, x0,y1,z0,
-                 x0,y0,z1, x1,y0,z1, x1,y1,z1, x0,y1,z1]
-            f = [0,1,2,0,2,3, 4,6,5,4,7,6,
-                 0,4,5,0,5,1, 1,5,6,1,6,2,
-                 2,6,7,2,7,3, 3,7,4,3,4,0]
-            return v, f
+        settings = ifcopenshell.geom.settings()
+        settings.set("use-world-coords", True)
 
-        def make_box_at(px, py, pz, w, d, h, axis, rot_angle, centered=True):
-            """Параллелепипед с центром в (px,py,pz), размер w×d×h, повёрнутый вокруг axis.
-            Если centered=False — профиль от 0 до w/d (для крыши, только одна сторона от конька)."""
-            if centered:
-                hw, hd = w/2, d/2
-                v = [-hw,-hd,0, hw,-hd,0, hw,hd,0, -hw,hd,0,
-                     -hw,-hd,h, hw,-hd,h, hw,hd,h, -hw,hd,h]
-            else:
-                v = [0,0,0, w,0,0, w,d,0, 0,d,0,
-                     0,0,h, w,0,h, w,d,h, 0,d,h]
-            f = [0,1,2,0,2,3, 4,6,5,4,7,6,
-                 0,4,5,0,5,1, 1,5,6,1,6,2,
-                 2,6,7,2,7,3, 3,7,4,3,4,0]
-            if abs(rot_angle) > 0.001:
-                v = _rotate_verts(v, axis, rot_angle)
+        def ifc_to_three(verts_flat):
+            """IFC (x,y,z) → Three.js (x,z,y)  (Z-up → Y-up swap)."""
             out = []
-            for i in range(0, len(v), 3):
-                out.extend([v[i]+px, v[i+1]+py, v[i+2]+pz])
-            return out, f
-
-        def _rotate_verts(v, axis, angle):
-            c, s = math.cos(angle), math.sin(angle)
-            ax, ay, az = axis
-            out = []
-            for i in range(0, len(v), 3):
-                x, y, z = v[i], v[i+1], v[i+2]
-                rx = x*(c+ax*ax*(1-c)) + y*(ax*ay*(1-c)-az*s) + z*(ax*az*(1-c)+ay*s)
-                ry = x*(ay*ax*(1-c)+az*s) + y*(c+ay*ay*(1-c)) + z*(ay*az*(1-c)-ax*s)
-                rz = x*(az*ax*(1-c)-ay*s) + y*(az*ay*(1-c)+ax*s) + z*(c+az*az*(1-c))
-                out.extend([rx, ry, rz])
+            for i in range(0, len(verts_flat), 3):
+                out.extend([verts_flat[i], verts_flat[i + 2], verts_flat[i + 1]])
             return out
 
-        def get_placement_rp(product):
-            placement = product.ObjectPlacement
-            if placement and hasattr(placement, "RelativePlacement"):
-                rp = placement.RelativePlacement
-                if rp and hasattr(rp, "Location"):
-                    c = rp.Location.Coordinates
-                    return (float(c[0]), float(c[1]), float(c[2])), rp
-            return (0, 0, 0), None
-
-        def get_extrusion_dims(product):
-            w, d, h = 0.3, 0.3, 2.8
-            if not product.Representation:
-                return w, d, h
-            rep = product.Representation
-            items = []
-            if rep.is_a() == "IfcProductDefinitionShape":
-                for r in (rep.Representations or []):
-                    items.extend(r.Items or [])
-            else:
-                items = rep.Items or []
-            for item in items:
-                if item.is_a() == "IfcExtrudedAreaSolid":
-                    sa = item.SweptArea
-                    if sa and sa.is_a() == "IfcRectangleProfileDef":
-                        w = float(sa.XDim)
-                        d = float(sa.YDim)
-                    if hasattr(item, "Depth"):
-                        h = float(item.Depth)
-            return w, d, h
-
-        def get_rotation_angle(rp):
-            """Извлекает угол поворота и ось из размещения IfcAxis2Placement3D."""
-            if not rp:
-                return (1, 0, 0), 0.0
-            if not hasattr(rp, "Axis") or not rp.Axis:
-                return (1, 0, 0), 0.0
-            z_axis = [float(d) for d in rp.Axis.DirectionRatios]
-            length = math.sqrt(sum(d*d for d in z_axis))
-            if length < 0.001:
-                return (1, 0, 0), 0.0
-            z_axis = [d/length for d in z_axis]
-            # угол между (0,0,1) и z_axis вокруг X
-            # Используем atan2 для правильного знака по Y-компоненте
-            angle = math.atan2(z_axis[1], z_axis[2])
-            if abs(angle) < 0.001:
-                return (1, 0, 0), 0.0
-            return (1, 0, 0), angle
+        def reverse_winding(faces_flat):
+            """Swap v1↔v2 per triangle to compensate for the reflection."""
+            out = []
+            for i in range(0, len(faces_flat), 3):
+                out.extend([faces_flat[i], faces_flat[i + 2], faces_flat[i + 1]])
+            return out
 
         geometry = []
+        DISPLAY_TYPES = {
+            "IfcWall": "IfcWall",
+            "IfcSlab": "IfcSlab",
+            "IfcWindow": "IfcWindow",
+            "IfcDoor": "IfcDoor",
+        }
 
-        # ─── Стены ───
-        for wall in ifc.by_type("IfcWall"):
-            try:
-                (px, py, pz), rp = get_placement_rp(wall)
-                w, d_raw, h = get_extrusion_dims(wall)
-                d = min(w, d_raw) if d_raw != 0.3 else d_raw
-                w = max(w, d_raw)
-                use_swapped = False
-                if rp and hasattr(rp, "RefDirection") and rp.RefDirection:
-                    dr = rp.RefDirection.DirectionRatios
-                    if len(dr) >= 2 and abs(float(dr[0])) < 0.5 and abs(float(dr[1])) > 0.5:
-                        use_swapped = True
-                if use_swapped:
-                    v, f = make_box(px + d/2, py + w/2, pz, d, w, h)
-                else:
-                    v, f = make_box(px + w/2, py + d/2, pz, w, d, h)
-                geometry.append({"name": wall.Name, "type": "IfcWall", "vertices": v, "faces": f})
-            except Exception:
-                pass
+        for ifc_type, display_type in DISPLAY_TYPES.items():
+            for product in ifc.by_type(ifc_type):
+                try:
+                    shape = ifcopenshell.geom.create_shape(settings, product)
+                    verts = list(shape.geometry.verts)
+                    faces = list(shape.geometry.faces)
+                    if not verts or not faces:
+                        continue
 
-        # ─── Плиты и крыша (с поворотом) ───
-        for slab in ifc.by_type("IfcSlab"):
-            try:
-                (px, py, pz), rp = get_placement_rp(slab)
-                w, d, h = get_extrusion_dims(slab)
-                axis, angle = get_rotation_angle(rp) if hasattr(slab, "PredefinedType") and slab.PredefinedType == "ROOF" else ((1,0,0), 0.0)
-                # Крыша: профиль только от конька до свеса (не центрированный)
-                # Крыша: профиль от конька в сторону свеса
-                # Крыша: поднимаем на высоту конька
-                ridge_h = d * abs(math.sin(angle))  # вертикальная высота конька
-                # От конька (вверху) до карниза (внизу)
-                y_sign = -1 if angle >= 0 else 1
-                v, f = make_box_at(px, py, pz + ridge_h, w, d * y_sign, h, axis, angle, centered=False)
-                etype = "IfcRoof" if (hasattr(slab, "PredefinedType") and slab.PredefinedType == "ROOF") else "IfcSlab"
-                geometry.append({"name": slab.Name, "type": etype, "vertices": v, "faces": f})
-            except Exception:
-                pass
+                    # Slabs with ROOF predefined type → different colour in viewer
+                    etype = display_type
+                    if ifc_type == "IfcSlab" and getattr(product, "PredefinedType", None) == "ROOF":
+                        etype = "IfcRoof"
 
-        # ─── Окна ───
-        for win in ifc.by_type("IfcWindow"):
-            try:
-                (px, py, pz), _ = get_placement_rp(win)
-                w = float(win.OverallWidth) if win.OverallWidth else 1.2
-                dh = float(win.OverallHeight) if win.OverallHeight else 1.5
-                d = 0.05
-                v, f = make_box(px, py + d/2, pz, w, d, dh)
-                geometry.append({"name": win.Name, "type": "IfcWindow", "vertices": v, "faces": f})
-            except Exception:
-                pass
-
-        # ─── Двери ───
-        for door in ifc.by_type("IfcDoor"):
-            try:
-                (px, py, pz), _ = get_placement_rp(door)
-                w = float(door.OverallWidth) if door.OverallWidth else 0.9
-                dh = float(door.OverallHeight) if door.OverallHeight else 2.1
-                d = 0.05
-                v, f = make_box(px, py + d/2, pz, w, d, dh)
-                geometry.append({"name": door.Name, "type": "IfcDoor", "vertices": v, "faces": f})
-            except Exception:
-                pass
+                    geometry.append({
+                        "name": product.Name or ifc_type,
+                        "type": etype,
+                        "vertices": ifc_to_three(verts),
+                        "faces": reverse_winding(faces),
+                    })
+                except Exception:
+                    pass
 
         return {"elements": geometry}
     except Exception as e:

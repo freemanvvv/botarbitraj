@@ -121,10 +121,13 @@ export default function ThreeViewer({ filename }: Props) {
           geo.computeVertexNormals();
 
           const color = new THREE.Color(colorMap[elem.type] || 0x8b5cf6);
+          const isGlass = elem.type === "IfcWindow";
           const mat = new THREE.MeshStandardMaterial({
             color,
-            roughness: 0.7,
-            metalness: 0.1,
+            roughness: isGlass ? 0.05 : 0.7,
+            metalness: isGlass ? 0.1 : 0.1,
+            transparent: isGlass,
+            opacity: isGlass ? 0.35 : 1.0,
             side: THREE.DoubleSide,
           });
 
