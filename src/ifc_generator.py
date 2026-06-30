@@ -299,11 +299,25 @@ def create_max_building(
         _assign_material(ifc, slab, "железобетон")
         elems.append(slab)
 
+        # Стены раскладываются так, чтобы углы не перекрывались:
+        # - Фасад и тыл идут по ПОЛНОЙ длине здания (включая углы)
+        # - Левая и правая стены идут по ВНУТРЕННЕЙ ширине (width - 2*wt),
+        #   то есть только между фасадом и задней стеной без нахлёста.
+        #
+        # Внешний контур здания: X=[0..length], Y=[0..width]
+        # Фасад (Y=width, внешняя грань): X=[0..length]
+        # Тыл (Y=0, внешняя грань):       X=[0..length]
+        # Лево (X=0, внешняя грань):      Y=[wt..width-wt]  ← без углов
+        # Право (X=length, внешняя грань):Y=[wt..width-wt]  ← без углов
+        inner_w = width - 2 * wt   # внутренняя длина боковых стен
+
         # ── Фасадная стена (Y = width) ──
         wf = ifc.create_entity("IfcWall", g())
         wf.Name = f"Фасад эт.{floor_i+1}"
+        # Стена расположена СНАРУЖИ по Y: её центр в XY на (length/2, width), грань [width..width+wt]
+        # Используем cx=length/2 чтобы профиль начинался с X=0 (не симметрично от 0)
         wf.ObjectPlacement = _make_placement(ifc, 0, width, wz)
-        wf_prof = _rect_profile(ifc, length, wt)
+        wf_prof = _rect_profile(ifc, length, wt, cx=length / 2, cy=wt / 2)
         wf.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
             [_shape_rep(ifc, ctx, [_extrude(ifc, wf_prof, floor_h)])])
         _assign_material(ifc, wf, "кирпич керамический")
@@ -311,7 +325,7 @@ def create_max_building(
 
         # Входная дверь (только 1-й этаж, по центру фасада)
         if add_doors and floor_i == 0:
-            door_x = max(0.3, (length - door_width) / 2)
+            door_x = (length - door_width) / 2
             op_d, d_elem = add_door_to_wall(wf, door_x, door_width, door_height,
                                             wf.ObjectPlacement, "Входная дверь")
             elems.extend([op_d, d_elem])
@@ -328,8 +342,8 @@ def create_max_building(
         # ── Задняя стена (Y = 0) ──
         wb = ifc.create_entity("IfcWall", g())
         wb.Name = f"Задняя стена эт.{floor_i+1}"
-        wb.ObjectPlacement = _make_placement(ifc, 0, 0, wz)
-        wb_prof = _rect_profile(ifc, length, wt)
+        wb.ObjectPlacement = _make_placement(ifc, 0, -wt, wz)
+        wb_prof = _rect_profile(ifc, length, wt, cx=length / 2, cy=wt / 2)
         wb.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
             [_shape_rep(ifc, ctx, [_extrude(ifc, wb_prof, floor_h)])])
         _assign_material(ifc, wb, "кирпич керамический")
@@ -340,33 +354,33 @@ def create_max_building(
                 op_w, w_elem = add_window_to_wall(wb, xp, window_sill, window_width, window_height, wb.ObjectPlacement)
                 elems.extend([op_w, w_elem])
 
-        # ── Левая стена (X = 0, повёрнута вдоль Y) ──
+        # ── Левая стена (X = 0, повёрнута вдоль Y) — без угловых наложений ──
         wl = ifc.create_entity("IfcWall", g())
         wl.Name = f"Левая стена эт.{floor_i+1}"
-        wl.ObjectPlacement = _make_placement(ifc, 0, 0, wz, _d3(ifc, 0, 1, 0))
-        wl_prof = _rect_profile(ifc, width, wt)
+        wl.ObjectPlacement = _make_placement(ifc, -wt, wt, wz, _d3(ifc, 0, 1, 0))
+        wl_prof = _rect_profile(ifc, inner_w, wt, cx=inner_w / 2, cy=wt / 2)
         wl.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
             [_shape_rep(ifc, ctx, [_extrude(ifc, wl_prof, floor_h)])])
         _assign_material(ifc, wl, "кирпич керамический")
         elems.append(wl)
 
-        if add_windows:
-            for xp in distribute_windows(width, windows_per_wall_short, window_width):
+        if add_windows and inner_w > 2 * wt:
+            for xp in distribute_windows(inner_w, windows_per_wall_short, window_width):
                 op_w, w_elem = add_window_to_wall(wl, xp, window_sill, window_width, window_height, wl.ObjectPlacement)
                 elems.extend([op_w, w_elem])
 
-        # ── Правая стена (X = length, повёрнута вдоль Y) ──
+        # ── Правая стена (X = length, повёрнута вдоль Y) — без угловых наложений ──
         wr = ifc.create_entity("IfcWall", g())
         wr.Name = f"Правая стена эт.{floor_i+1}"
-        wr.ObjectPlacement = _make_placement(ifc, length, 0, wz, _d3(ifc, 0, 1, 0))
-        wr_prof = _rect_profile(ifc, width, wt)
+        wr.ObjectPlacement = _make_placement(ifc, length, wt, wz, _d3(ifc, 0, 1, 0))
+        wr_prof = _rect_profile(ifc, inner_w, wt, cx=inner_w / 2, cy=wt / 2)
         wr.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
             [_shape_rep(ifc, ctx, [_extrude(ifc, wr_prof, floor_h)])])
         _assign_material(ifc, wr, "кирпич керамический")
         elems.append(wr)
 
-        if add_windows:
-            for xp in distribute_windows(width, windows_per_wall_short, window_width):
+        if add_windows and inner_w > 2 * wt:
+            for xp in distribute_windows(inner_w, windows_per_wall_short, window_width):
                 op_w, w_elem = add_window_to_wall(wr, xp, window_sill, window_width, window_height, wr.ObjectPlacement)
                 elems.extend([op_w, w_elem])
 
@@ -463,7 +477,9 @@ def create_max_building(
                           RelatedElements=elems, RelatingStructure=storey)
 
     # ─── Крыша ────────────────────────────────────────────────────────────────
-    roof_z = num_floors * floor_h
+    # Стены верхнего этажа доходят до (height + slab_thickness);
+    # крыша стартует именно с этой отметки, чтобы не было зазора.
+    roof_z = height + slab_thickness
     roof_elems = []
 
     if roof_type == "gable":

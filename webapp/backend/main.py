@@ -482,34 +482,116 @@ class ArchitectRequest(BaseModel):
 
 @app.post("/api/model/architect")
 def model_architect(req: ArchitectRequest):
-    """LLM как архитектор: принимает требования → проектирует здание → возвращает params + обоснование."""
+    """
+    LLM-архитектор двухшаговый пайплайн:
+    1. Собирает нормы (ChromaDB если заполнена + статическая база КМК/ШНК)
+    2. LLM изучает нормы и составляет план здания с цитированием
+    3. Генерирует IFC-модель по плану
+    """
     import requests as req_lib
     from src.config import LM_STUDIO_BASE_URL
+    from src.normbase.norms_knowledge import get_relevant_norms, search_sources_csv
     import re
 
     if not req.requirements.strip():
         raise HTTPException(400, "requirements is required")
 
-    system_prompt = """Ты — опытный архитектор-проектировщик в Узбекистане.
-Клиент дал тебе требования к зданию. Твоя задача — самостоятельно принять все архитектурные решения:
-рассчитать площадь, определить пропорции, выбрать конструктивную систему, расставить окна и двери.
+    # ─── ШАГ 1: Сбор норм ─────────────────────────────────────────────────────
+    static_norms = get_relevant_norms(req.requirements)
 
-Верни ТОЛЬКО валидный JSON (без markdown, без пояснений вне JSON):
-{
+    # Дополнительно ищем релевантные документы в ChromaDB
+    chroma_context = ""
+    try:
+        import chromadb
+        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
+        try:
+            col = client.get_collection("uz_construction_norms")
+            if col.count() > 0:
+                results = col.query(
+                    query_texts=[req.requirements],
+                    n_results=min(8, col.count()),
+                )
+                docs = results.get("documents", [[]])[0]
+                metas = results.get("metadatas", [[]])[0]
+                if docs:
+                    chroma_context = "\n\nДОПОЛНИТЕЛЬНЫЕ ФРАГМЕНТЫ ИЗ БАЗЫ:\n"
+                    for doc, meta in zip(docs, metas):
+                        src = f"{meta.get('doc_type','')} {meta.get('number','')} п.{meta.get('clauses','')}".strip()
+                        chroma_context += f"\n[{src}]\n{doc[:400]}\n"
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    # Поиск релевантных документов в CSV (по ключевым словам)
+    csv_path = str(SRC_DIR / "normbase" / "sources.csv")
+    csv_hits = search_sources_csv(req.requirements[:80], csv_path, limit=5)
+    csv_refs = ""
+    if csv_hits:
+        csv_refs = "\n\nРЕЛЕВАНТНЫЕ НОРМАТИВЫ В БАЗЕ:\n" + "\n".join(
+            f"• {r.get('doc_type','')} {r.get('number','')} — {r.get('title','')}"
+            for r in csv_hits
+        )
+
+    norms_block = static_norms + chroma_context + csv_refs
+
+    # ─── ШАГ 2: LLM разрабатывает план ───────────────────────────────────────
+    system_prompt = f"""Ты — опытный архитектор-проектировщик в Узбекистане с 20-летним стажем.
+
+Перед тобой ДЕЙСТВУЮЩИЕ СТРОИТЕЛЬНЫЕ НОРМЫ (КМК/ШНК):
+{norms_block}
+
+ТВОЯ ЗАДАЧА:
+1. Изучи требования заказчика
+2. Применяя нормы выше, рассчитай все параметры здания:
+   - Площадь: исходя из числа людей × норма на человека
+   - Размеры плана: длина × ширина из площади и оптимальных пропорций
+   - Высоту этажа: строго по нормам для данного типа здания
+   - Толщину стен: по КМК 2.03.06-01 в зависимости от этажности
+   - Количество и размеры окон: световой коэффициент 1:8 (жилые) или 1:6 (офис)
+   - Подоконник: по норме для типа здания
+   - Перемычки, колонны, фундамент: по нормам
+3. Для каждого решения УКАЖИ норму-основание (например: «КМК 2.08.01-89 п.2.1»)
+
+Верни ТОЛЬКО валидный JSON без markdown:
+{{
   "name": "Название проекта",
-  "summary": "Краткое архитектурное решение в 1-2 предложениях",
-  "reasoning": {
-    "footprint": "Почему именно такие длина и ширина",
-    "floors": "Почему столько этажей и такая высота",
-    "facade": "Решение по окнам: количество, размер, расположение",
-    "structure": "Нужны ли колонны, балконы, тип крыши и почему",
-    "layout": "Краткая планировка: что где находится"
-  },
-  "params": {
-    "length": 15.0,
+  "building_type": "жилой/офис/торговый",
+  "summary": "Описание проекта (2-3 предложения)",
+  "norm_study": "Какие нормы применены и почему (200-400 символов)",
+  "plan": {{
+    "total_area_m2": 150.0,
+    "persons": 6,
+    "area_per_person": 25.0,
+    "norm_ref_area": "КМК 2.08.01-89 п.2.1",
+    "floor_count": 2,
+    "floor_height_m": 3.0,
+    "norm_ref_height": "КМК 2.08.01-89 п.2.1",
+    "wall_material": "кирпич 1.5 кирпича",
+    "wall_thickness_m": 0.38,
+    "norm_ref_wall": "КМК 2.03.06-01 п.2.2",
+    "slab_thickness_m": 0.20,
+    "norm_ref_slab": "КМК 2.03.01-96 п.3.1",
+    "window_sill_m": 0.9,
+    "norm_ref_sill": "КМК 2.08.01-89 п.3.1",
+    "lintel_height_m": 0.25,
+    "norm_ref_lintel": "КМК 2.03.06-01 п.3.1",
+    "foundation_depth_m": 0.6,
+    "norm_ref_foundation": "КМК 2.02.01-98 п.4.1"
+  }},
+  "reasoning": {{
+    "footprint": "Обоснование длины и ширины с ссылкой на нормы",
+    "floors": "Обоснование этажности и высоты этажа",
+    "facade": "Обоснование окон: кол-во, размер, подоконник (световой коэффициент)",
+    "structure": "Стены, колонны, балконы, крыша — и почему",
+    "layout": "Краткая планировка помещений"
+  }},
+  "params": {{
+    "length": 18.0,
     "width": 12.0,
     "num_floors": 2,
     "floor_height": 3.0,
+    "wall_thickness": 0.38,
     "roof_type": "gable",
     "windows_per_wall_long": 3,
     "windows_per_wall_short": 2,
@@ -521,18 +603,9 @@ def model_architect(req: ArchitectRequest):
     "add_columns": false,
     "add_balconies": false,
     "add_internal_walls": true,
-    "add_foundation": true,
-    "wall_thickness": 0.4
-  }
-}
-
-Архитектурные нормы которые нужно соблюдать:
-- Жилой дом: 18-25 м² на человека, высота этажа 2.7-3.0м
-- Офис: 8-12 м² на сотрудника, высота этажа 3.0-3.6м
-- Торговый: 5-8 м² на посетителя, высота этажа 3.5-5м
-- Соотношение окон к стене: 15-30% площади фасада
-- Колонны нужны при пролёте > 6м или > 4 этажей
-- Балконы — жилые дома от 2 этажа, офисы обычно без"""
+    "add_foundation": true
+  }}
+}}"""
 
     try:
         resp = req_lib.post(
@@ -543,10 +616,10 @@ def model_architect(req: ArchitectRequest):
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": f"Требования заказчика:\n{req.requirements}"},
                 ],
-                "temperature": 0.3,
-                "max_tokens": 1200,
+                "temperature": 0.2,
+                "max_tokens": 2000,
             },
-            timeout=90,
+            timeout=120,
         )
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"]["content"].strip()
@@ -558,8 +631,10 @@ def model_architect(req: ArchitectRequest):
         data = json.loads(json_match.group())
 
         p = data.get("params", {})
-        floor_h = float(p.get("floor_height", 3.0))
-        n_floors = int(p.get("num_floors", 2))
+        plan = data.get("plan", {})
+        floor_h = float(p.get("floor_height", plan.get("floor_height_m", 3.0)))
+        n_floors = int(p.get("num_floors", plan.get("floor_count", 2)))
+        wall_t = float(p.get("wall_thickness", plan.get("wall_thickness_m", 0.38)))
 
         building_params = {
             "name": data.get("name", "Building"),
@@ -567,8 +642,8 @@ def model_architect(req: ArchitectRequest):
             "width": float(p.get("width", 12.0)),
             "height": floor_h * n_floors,
             "num_floors": n_floors,
-            "wall_thickness": float(p.get("wall_thickness", 0.4)),
-            "slab_thickness": 0.2,
+            "wall_thickness": wall_t,
+            "slab_thickness": float(plan.get("slab_thickness_m", 0.20)),
             "roof_type": p.get("roof_type", "gable"),
             "add_internal_walls": bool(p.get("add_internal_walls", True)),
             "add_windows": True,
@@ -580,19 +655,22 @@ def model_architect(req: ArchitectRequest):
             "windows_per_wall_short": int(p.get("windows_per_wall_short", 2)),
             "window_width": float(p.get("window_width", 1.2)),
             "window_height": float(p.get("window_height", 1.5)),
-            "window_sill": float(p.get("window_sill", 0.9)),
+            "window_sill": float(p.get("window_sill", plan.get("window_sill_m", 0.9))),
             "door_width": float(p.get("door_width", 0.9)),
             "door_height": float(p.get("door_height", 2.1)),
         }
 
-        # Сразу генерируем IFC
+        # ─── ШАГ 3: Генерация IFC ─────────────────────────────────────────────
         from src.ifc_generator import create_max_building
         path, stats = create_max_building(**building_params)
 
         return {
             "ok": True,
             "name": data.get("name", "Building"),
+            "building_type": data.get("building_type", ""),
             "summary": data.get("summary", ""),
+            "norm_study": data.get("norm_study", ""),
+            "plan": data.get("plan", {}),
             "reasoning": data.get("reasoning", {}),
             "params": building_params,
             "stats": stats,

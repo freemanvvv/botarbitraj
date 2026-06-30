@@ -32,6 +32,16 @@ interface ArchReasoning {
   footprint: string; floors: string; facade: string; structure: string; layout: string;
 }
 
+interface ArchPlan {
+  total_area_m2?: number; persons?: number; area_per_person?: number; norm_ref_area?: string;
+  floor_count?: number; floor_height_m?: number; norm_ref_height?: string;
+  wall_material?: string; wall_thickness_m?: number; norm_ref_wall?: string;
+  slab_thickness_m?: number; norm_ref_slab?: string;
+  window_sill_m?: number; norm_ref_sill?: string;
+  lintel_height_m?: number; norm_ref_lintel?: string;
+  foundation_depth_m?: number; norm_ref_foundation?: string;
+}
+
 export default function Modeling() {
   const [params, setParams] = useState({ ...DEFAULT_PARAMS });
   const [stats, setStats] = useState<Stats | null>(null);
@@ -50,7 +60,10 @@ export default function Modeling() {
   const [archReq, setArchReq] = useState("");
   const [archName, setArchName] = useState("");
   const [archSummary, setArchSummary] = useState("");
+  const [archNormStudy, setArchNormStudy] = useState("");
+  const [archPlan, setArchPlan] = useState<ArchPlan | null>(null);
   const [archReasoning, setArchReasoning] = useState<ArchReasoning | null>(null);
+  const [archStep, setArchStep] = useState<"idle"|"norms"|"planning"|"generating"|"done">("idle");
   const [archError, setArchError] = useState("");
   const planInputRef = useRef<HTMLInputElement>(null);
 
@@ -144,23 +157,33 @@ export default function Modeling() {
     setArchLoading(true);
     setArchError("");
     setArchReasoning(null);
+    setArchPlan(null);
+    setArchNormStudy("");
     setArchName(""); setArchSummary("");
+    setArchStep("norms");
     try {
+      // Simulate step progression visually
+      const stepTimer = setTimeout(() => setArchStep("planning"), 4000);
+      const stepTimer2 = setTimeout(() => setArchStep("generating"), 9000);
       const res = await fetch(`${API}/api/model/architect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ requirements: archReq }),
       });
+      clearTimeout(stepTimer); clearTimeout(stepTimer2);
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Ошибка архитектора");
+      setArchStep("done");
       setArchName(d.name || "");
       setArchSummary(d.summary || "");
+      setArchNormStudy(d.norm_study || "");
+      setArchPlan(d.plan || null);
       setArchReasoning(d.reasoning || null);
       setStats(d.stats);
       setSelectedFile(d.filename);
       setParams(prev => ({ ...prev, ...d.params }));
       await refreshFiles();
-    } catch (e: any) { setArchError(e.message); }
+    } catch (e: any) { setArchError(e.message); setArchStep("idle"); }
     finally { setArchLoading(false); }
   };
 
@@ -211,15 +234,16 @@ export default function Modeling() {
           {/* ══ AI АРХИТЕКТОР ══ */}
           {tab === "arch" && (<>
             <h3 style={{ marginBottom: 6, color: "var(--accent)" }}>🏛 AI Архитектор</h3>
-            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 14, lineHeight: 1.6 }}>
-              Опиши требования к зданию — LLM самостоятельно спроектирует его: рассчитает площади, расставит окна, выберет конструкцию.
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 10, lineHeight: 1.6 }}>
+              Опиши требования — LLM изучит нормы КМК/ШНК, составит план с обоснованием, затем сгенерирует IFC.
             </p>
 
             <textarea
               value={archReq}
               onChange={e => setArchReq(e.target.value)}
-              placeholder={"Примеры:\n• Жилой дом на семью из 4 человек, участок 10×15м, 2 этажа, 3 спальни\n• Офис на 20 сотрудников, представительский вход, переговорная\n• Торговый павильон 100м², одноэтажный, большие витрины"}
-              style={{ width: "100%", height: 120, padding: 10, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", resize: "vertical", fontSize: "0.83rem", fontFamily: "inherit", lineHeight: 1.6 }}
+              disabled={archLoading}
+              placeholder={"Примеры:\n• Жилой дом на семью из 4 человек, 2 этажа, 3 спальни, балконы\n• Офис на 20 сотрудников, представительский вход, переговорная\n• Торговый павильон 100м², одноэтажный, большие витрины"}
+              style={{ width: "100%", height: 110, padding: 10, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", resize: "vertical", fontSize: "0.83rem", fontFamily: "inherit", lineHeight: 1.6 }}
             />
 
             {archError && (
@@ -229,31 +253,87 @@ export default function Modeling() {
             )}
 
             <button className="btn-gen" onClick={designWithAI} disabled={archLoading || !archReq.trim()} style={{ marginTop: 10 }}>
-              {archLoading ? "⏳ Архитектор проектирует..." : "🏛 Разработать проект"}
+              {archLoading ? "⏳ Идёт проектирование..." : "🏛 Разработать проект"}
             </button>
 
+            {/* Прогресс шагов */}
             {archLoading && (
-              <div style={{ marginTop: 12, padding: "10px 14px", background: "var(--bg2)", borderRadius: 8, fontSize: "0.78rem", color: "var(--text2)", lineHeight: 1.7 }}>
-                LLM рассчитывает площади, подбирает пропорции и генерирует IFC...
+              <div style={{ marginTop: 12 }}>
+                {([
+                  ["norms",      "📚 Изучение норм КМК/ШНК Узбекистана..."],
+                  ["planning",   "📐 Составление плана здания по нормам..."],
+                  ["generating", "🏗 Генерация IFC-модели..."],
+                ] as [typeof archStep, string][]).map(([step, label], i) => {
+                  const steps = ["norms","planning","generating","done"];
+                  const current = steps.indexOf(archStep);
+                  const mine = steps.indexOf(step);
+                  const done = current > mine || archStep === "done";
+                  const active = archStep === step;
+                  return (
+                    <div key={step} style={{ display: "flex", alignItems: "center", gap: 8, padding: "6px 10px", marginBottom: 4, borderRadius: 7, background: active ? "rgba(10,132,255,0.12)" : "transparent" }}>
+                      <div style={{ width: 18, height: 18, borderRadius: "50%", border: `2px solid ${done ? "var(--accent)" : active ? "var(--accent)" : "var(--border)"}`, background: done ? "var(--accent)" : "transparent", display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>
+                        {done && <span style={{ color: "#fff", fontSize: "0.65rem" }}>✓</span>}
+                      </div>
+                      <span style={{ fontSize: "0.8rem", color: done || active ? "var(--text)" : "var(--text3)" }}>{label}</span>
+                    </div>
+                  );
+                })}
               </div>
             )}
 
-            {archReasoning && (<>
-              <div style={{ marginTop: 16, padding: "12px 14px", background: "rgba(10,132,255,0.08)", border: "1px solid rgba(10,132,255,0.2)", borderRadius: 10 }}>
-                <div style={{ fontWeight: 600, fontSize: "0.92rem", color: "var(--text)", marginBottom: 4 }}>{archName}</div>
-                <div style={{ fontSize: "0.8rem", color: "var(--text2)", lineHeight: 1.6 }}>{archSummary}</div>
+            {/* Результат: план с нормами */}
+            {archStep === "done" && archReasoning && (<>
+              <div style={{ marginTop: 14, padding: "12px 14px", background: "rgba(10,132,255,0.08)", border: "1px solid rgba(10,132,255,0.2)", borderRadius: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: "0.9rem", color: "var(--text)", marginBottom: 3 }}>{archName}</div>
+                <div style={{ fontSize: "0.78rem", color: "var(--text2)", lineHeight: 1.6 }}>{archSummary}</div>
               </div>
 
+              {/* Что изучил LLM */}
+              {archNormStudy && (
+                <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(48,209,88,0.08)", border: "1px solid rgba(48,209,88,0.2)", borderRadius: 8 }}>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "#30d158", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>📚 Применённые нормы</div>
+                  <div style={{ fontSize: "0.77rem", color: "var(--text)", lineHeight: 1.6 }}>{archNormStudy}</div>
+                </div>
+              )}
+
+              {/* Таблица параметров плана */}
+              {archPlan && (
+                <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>📋 Расчётные параметры</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.75rem" }}>
+                    <tbody>
+                      {[
+                        ["Общая площадь", archPlan.total_area_m2 ? `${archPlan.total_area_m2} м²` : null, archPlan.norm_ref_area],
+                        ["На 1 чел.", archPlan.area_per_person ? `${archPlan.area_per_person} м²` : null, archPlan.norm_ref_area],
+                        ["Высота этажа", archPlan.floor_height_m ? `${archPlan.floor_height_m} м` : null, archPlan.norm_ref_height],
+                        ["Стены", archPlan.wall_material || (archPlan.wall_thickness_m ? `${(archPlan.wall_thickness_m * 1000).toFixed(0)} мм` : null), archPlan.norm_ref_wall],
+                        ["Перекрытие", archPlan.slab_thickness_m ? `${(archPlan.slab_thickness_m * 1000).toFixed(0)} мм` : null, archPlan.norm_ref_slab],
+                        ["Подоконник", archPlan.window_sill_m ? `${archPlan.window_sill_m} м` : null, archPlan.norm_ref_sill],
+                        ["Перемычка", archPlan.lintel_height_m ? `${(archPlan.lintel_height_m * 1000).toFixed(0)} мм` : null, archPlan.norm_ref_lintel],
+                        ["Фундамент", archPlan.foundation_depth_m ? `${archPlan.foundation_depth_m} м` : null, archPlan.norm_ref_foundation],
+                      ].filter(([, v]) => v).map(([k, v, ref]) => (
+                        <tr key={k as string} style={{ borderBottom: "1px solid var(--border)" }}>
+                          <td style={{ padding: "4px 0", color: "var(--text2)", width: "38%" }}>{k}</td>
+                          <td style={{ padding: "4px 4px", color: "var(--text)", fontWeight: 500 }}>{v}</td>
+                          <td style={{ padding: "4px 0", color: "var(--accent)", fontSize: "0.68rem", textAlign: "right" }}>{ref}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+
+              {/* Архитектурные решения */}
               {([
                 ["📐 Габариты", archReasoning.footprint],
                 ["🏢 Этажность", archReasoning.floors],
-                ["🪟 Фасад", archReasoning.facade],
+                ["🪟 Фасад / окна", archReasoning.facade],
                 ["🏗 Конструкция", archReasoning.structure],
                 ["🗺 Планировка", archReasoning.layout],
               ] as [string, string][]).map(([label, text]) => text ? (
-                <div key={label} style={{ marginTop: 8, padding: "9px 12px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--border)" }}>
-                  <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
-                  <div style={{ fontSize: "0.8rem", color: "var(--text)", lineHeight: 1.6 }}>{text}</div>
+                <div key={label} style={{ marginTop: 6, padding: "8px 12px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>{label}</div>
+                  <div style={{ fontSize: "0.78rem", color: "var(--text)", lineHeight: 1.6 }}>{text}</div>
                 </div>
               ) : null)}
 
@@ -262,13 +342,14 @@ export default function Modeling() {
               </button>
             </>)}
 
-            <div style={{ marginTop: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 8, fontSize: "0.73rem", color: "var(--text2)", lineHeight: 1.7 }}>
-              <strong style={{ color: "var(--text3)" }}>Как работает:</strong><br />
-              1. LLM получает требования и применяет строительные нормы Узбекистана<br />
-              2. Самостоятельно рассчитывает размеры, этажность и элементы фасада<br />
-              3. Объясняет каждое архитектурное решение<br />
-              4. Сразу генерирует IFC-модель
-            </div>
+            {archStep === "idle" && (
+              <div style={{ marginTop: 12, padding: "10px 12px", background: "var(--bg2)", borderRadius: 8, fontSize: "0.73rem", color: "var(--text2)", lineHeight: 1.7 }}>
+                <strong style={{ color: "var(--text3)" }}>Пайплайн:</strong><br />
+                1. 📚 LLM изучает КМК/ШНК: высота этажа, толщина стен, размеры окон, фундамент<br />
+                2. 📐 Составляет план с ссылками на нормы и расчётом площадей<br />
+                3. 🏗 Генерирует IFC с правильными пропорциями
+              </div>
+            )}
           </>)}
 
           {/* ══ ПАРАМЕТРЫ ══ */}
