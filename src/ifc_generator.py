@@ -358,6 +358,7 @@ def create_max_building(
             [_shape_rep(ifc, ctx, [_extrude(ifc, f_prof, found_depth)])])
         _assign_material(ifc, found, "бетон")
         found_storey = ifc.create_entity("IfcBuildingStorey", g(), None, "Фундамент")
+        found_storey.Elevation = -found_depth
         ifc.create_entity("IfcRelAggregates", g(), None, None,
                           RelatingObject=bldg, RelatedObjects=[found_storey])
         ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
@@ -405,6 +406,7 @@ def create_max_building(
         ceil_z = wz + floor_h           # уровень потолка (верх стен = низ ригелей)
 
         storey = ifc.create_entity("IfcBuildingStorey", g(), None, f"Этаж {floor_i+1}")
+        storey.Elevation = float(z0)
         ifc.create_entity("IfcRelAggregates", g(), None, None,
                           RelatingObject=bldg, RelatedObjects=[storey])
         last_storey = storey
@@ -785,6 +787,7 @@ def create_apartment_building(
             [_shape_rep(ifc, ctx, [_extrude(ifc, f_prof, found_depth)])])
         _assign_material(ifc, found, "бетон")
         found_storey = ifc.create_entity("IfcBuildingStorey", g(), None, "Фундамент")
+        found_storey.Elevation = -found_depth
         ifc.create_entity("IfcRelAggregates", g(), None, None,
                           RelatingObject=bldg, RelatedObjects=[found_storey])
         ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
@@ -809,6 +812,7 @@ def create_apartment_building(
         ceil_z = wz + floor_height
 
         storey = ifc.create_entity("IfcBuildingStorey", g(), None, f"Этаж {floor_i+1}")
+        storey.Elevation = float(z0)
         ifc.create_entity("IfcRelAggregates", g(), None, None,
                           RelatingObject=bldg, RelatedObjects=[storey])
         last_storey = storey

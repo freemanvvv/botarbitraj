@@ -53,6 +53,20 @@ interface ArchBuilding {
   stair_width_m?: number; riser_shaft_m?: string; electrical_niche_m?: string;
 }
 
+interface IntegrityIssue {
+  severity: "error" | "warning" | "info";
+  element_type: string;
+  element_name: string;
+  message: string;
+}
+
+interface IntegrityResult {
+  ok: boolean;
+  issues: IntegrityIssue[];
+  summary: string;
+  counts: { errors: number; warnings: number; total_elements: number };
+}
+
 export default function Modeling() {
   const [params, setParams] = useState({ ...DEFAULT_PARAMS });
   const [stats, setStats] = useState<Stats | null>(null);
@@ -81,6 +95,7 @@ export default function Modeling() {
   const [archError, setArchError] = useState("");
   const [archModels, setArchModels] = useState<string[]>(["local-model"]);
   const [archModel, setArchModel] = useState("local-model");
+  const [archIntegrity, setArchIntegrity] = useState<IntegrityResult | null>(null);
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -180,6 +195,7 @@ export default function Modeling() {
     setArchPlan(null);
     setArchNormStudy("");
     setArchViolations([]);
+    setArchIntegrity(null);
     setArchName(""); setArchSummary("");
     setArchStep("norms");
     try {
@@ -203,6 +219,7 @@ export default function Modeling() {
       setArchViolations(d.norm_violations_fixed || []);
       setArchStages(d.stages || []);
       setArchBuilding(d.building || null);
+      setArchIntegrity(d.integrity || null);
       setStats(d.stats);
       setSelectedFile(d.filename);
       setParams(prev => ({ ...prev, ...d.params }));
@@ -339,6 +356,44 @@ export default function Modeling() {
                   <ul style={{ margin: 0, paddingLeft: 16, fontSize: "0.75rem", color: "var(--text)", lineHeight: 1.7 }}>
                     {archViolations.map((v, i) => <li key={i}>{v}</li>)}
                   </ul>
+                </div>
+              )}
+
+              {/* Проверка целостности IFC */}
+              {archIntegrity && (
+                <div style={{
+                  marginTop: 8, padding: "8px 12px", borderRadius: 8,
+                  background: archIntegrity.ok ? "rgba(48,209,88,0.06)" : "rgba(255,69,58,0.07)",
+                  border: `1px solid ${archIntegrity.ok ? "rgba(48,209,88,0.25)" : "rgba(255,69,58,0.3)"}`,
+                }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 6, marginBottom: archIntegrity.issues.length ? 6 : 0 }}>
+                    <span style={{ fontSize: "1rem" }}>{archIntegrity.ok ? "✅" : "❌"}</span>
+                    <div style={{ fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: archIntegrity.ok ? "#30d158" : "var(--danger)" }}>
+                      Целостность IFC — {archIntegrity.summary}
+                    </div>
+                    <div style={{ marginLeft: "auto", fontSize: "0.68rem", color: "var(--text3)" }}>
+                      {archIntegrity.counts.total_elements} элементов
+                    </div>
+                  </div>
+                  {archIntegrity.issues.length > 0 && (
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      {archIntegrity.issues.map((issue, i) => (
+                        <div key={i} style={{
+                          padding: "5px 8px", borderRadius: 6, fontSize: "0.73rem",
+                          background: issue.severity === "error" ? "rgba(255,69,58,0.1)" : "rgba(255,159,10,0.08)",
+                          borderLeft: `3px solid ${issue.severity === "error" ? "var(--danger)" : "#ff9f0a"}`,
+                        }}>
+                          <span style={{ fontWeight: 600, color: issue.severity === "error" ? "var(--danger)" : "#ff9f0a", marginRight: 4 }}>
+                            {issue.severity === "error" ? "ОШИБКА" : "ВНИМАНИЕ"}
+                          </span>
+                          <span style={{ color: "var(--text3)", marginRight: 4 }}>
+                            {issue.element_type} / {issue.element_name}:
+                          </span>
+                          <span style={{ color: "var(--text)", lineHeight: 1.5 }}>{issue.message}</span>
+                        </div>
+                      ))}
+                    </div>
+                  )}
                 </div>
               )}
 

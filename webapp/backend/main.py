@@ -751,6 +751,10 @@ def model_architect(req: ArchitectRequest):
         else:
             path, stats = create_max_building(**building_params)
 
+        # ─── ШАГ 4: Проверка целостности IFC ─────────────────────────────────
+        from src.integrity_checker import validate_model_integrity
+        integrity = validate_model_integrity(path)
+
         return {
             "ok": True,
             "name": data.get("name", "Building"),
@@ -763,6 +767,7 @@ def model_architect(req: ArchitectRequest):
             "reasoning": data.get("reasoning", {}),
             "params": building_params,
             "norm_violations_fixed": norm_violations,
+            "integrity": integrity,
             "stats": stats,
             "filename": os.path.basename(path),
             "download_url": f"/api/model/download/{os.path.basename(path)}",
