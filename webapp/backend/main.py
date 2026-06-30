@@ -319,11 +319,21 @@ class BuildingParams(BaseModel):
     add_internal_walls: bool = True
     add_windows: bool = True
     add_doors: bool = True
+    add_columns: bool = True
+    add_balconies: bool = False
+    add_foundation: bool = True
+    windows_per_wall_long: int = 3
+    windows_per_wall_short: int = 2
+    window_width: float = 1.2
+    window_height: float = 1.5
+    window_sill: float = 0.9
+    door_width: float = 0.9
+    door_height: float = 2.1
 
 
 @app.post("/api/model/generate")
 def model_generate(params: BuildingParams):
-    """Генерация IFC-модели (старый генератор)."""
+    """Генерация IFC-модели."""
     try:
         from src.ifc_generator import create_max_building
         path, stats = create_max_building(
@@ -338,6 +348,16 @@ def model_generate(params: BuildingParams):
             add_internal_walls=params.add_internal_walls,
             add_windows=params.add_windows,
             add_doors=params.add_doors,
+            add_columns=params.add_columns,
+            add_balconies=params.add_balconies,
+            add_foundation=params.add_foundation,
+            windows_per_wall_long=params.windows_per_wall_long,
+            windows_per_wall_short=params.windows_per_wall_short,
+            window_width=params.window_width,
+            window_height=params.window_height,
+            window_sill=params.window_sill,
+            door_width=params.door_width,
+            door_height=params.door_height,
         )
         return {
             "path": path,
@@ -347,6 +367,108 @@ def model_generate(params: BuildingParams):
         }
     except Exception as e:
         raise HTTPException(500, str(e))
+
+
+@app.post("/api/model/analyze-image")
+async def model_analyze_image(
+    file: UploadFile = File(None),
+    description: str = Form(""),
+):
+    """Анализ плана/фасада через LLM → извлечение параметров здания."""
+    import base64
+    from src.config import LM_STUDIO_BASE_URL
+
+    image_b64 = None
+    media_type = "image/jpeg"
+
+    if file and file.filename:
+        content = await file.read()
+        image_b64 = base64.b64encode(content).decode()
+        media_type = file.content_type or "image/jpeg"
+
+    system_prompt = (
+        "Ты — BIM-инженер. Проанализируй изображение архитектурного плана или фасада здания "
+        "и извлеки параметры. Верни ТОЛЬКО валидный JSON без markdown:\n"
+        "{\n"
+        '  "name": "Building",\n'
+        '  "description": "краткое описание",\n'
+        '  "length": 15.0,\n'
+        '  "width": 12.0,\n'
+        '  "floor_height": 3.0,\n'
+        '  "num_floors": 2,\n'
+        '  "roof_type": "gable",\n'
+        '  "windows_per_wall_long": 3,\n'
+        '  "windows_per_wall_short": 2,\n'
+        '  "window_width": 1.2,\n'
+        '  "window_height": 1.5,\n'
+        '  "window_sill": 0.9,\n'
+        '  "door_width": 0.9,\n'
+        '  "door_height": 2.1,\n'
+        '  "add_columns": false,\n'
+        '  "add_balconies": false,\n'
+        '  "notes": "краткий анализ изображения"\n'
+        "}"
+    )
+
+    user_content: list = []
+    if image_b64:
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:{media_type};base64,{image_b64}"}
+        })
+    text_part = description or "Проанализируй изображение и верни параметры здания."
+    user_content.append({"type": "text", "text": text_part})
+
+    try:
+        import requests as req_lib
+        resp = req_lib.post(
+            f"{LM_STUDIO_BASE_URL}/chat/completions",
+            json={
+                "model": "local-model",
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_content if image_b64 else text_part},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 600,
+            },
+            timeout=60,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+
+        # Извлечь JSON из ответа
+        import re
+        json_match = re.search(r'\{[\s\S]*\}', raw)
+        if not json_match:
+            raise ValueError("LLM не вернул JSON")
+        extracted = json.loads(json_match.group())
+
+        # Сформировать params для генерации
+        floor_h = float(extracted.get("floor_height", 3.0))
+        n_floors = int(extracted.get("num_floors", 2))
+        result_params = {
+            "name": extracted.get("name", "Building"),
+            "length": float(extracted.get("length", 15.0)),
+            "width": float(extracted.get("width", 12.0)),
+            "height": floor_h * n_floors,
+            "num_floors": n_floors,
+            "roof_type": extracted.get("roof_type", "gable"),
+            "windows_per_wall_long": int(extracted.get("windows_per_wall_long", 3)),
+            "windows_per_wall_short": int(extracted.get("windows_per_wall_short", 2)),
+            "window_width": float(extracted.get("window_width", 1.2)),
+            "window_height": float(extracted.get("window_height", 1.5)),
+            "window_sill": float(extracted.get("window_sill", 0.9)),
+            "door_width": float(extracted.get("door_width", 0.9)),
+            "door_height": float(extracted.get("door_height", 2.1)),
+            "add_columns": bool(extracted.get("add_columns", False)),
+            "add_balconies": bool(extracted.get("add_balconies", False)),
+            "notes": extracted.get("notes", ""),
+            "description": extracted.get("description", ""),
+        }
+        return {"ok": True, "params": result_params}
+    except Exception as e:
+        raise HTTPException(500, f"Ошибка анализа: {e}")
 
 
 class BimGenerateRequest(BaseModel):
