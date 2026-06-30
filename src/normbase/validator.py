@@ -113,3 +113,62 @@ def validate_and_fix_params(params: dict, building_type: str = "") -> tuple[dict
         p["window_height"] = max(wh, 1.5)
 
     return p, notes
+
+
+def validate_building_meta(building: dict, num_floors: int) -> tuple[dict, list[str]]:
+    """
+    Проверяет блок 'building' (подъезды/лифты/шахты) на соответствие
+    КМК 2.08.01-89 п.6.1-6.8. LLM может забыть про лифт или занизить
+    грузоподъёмность — здесь это подправляется детерминированно.
+    """
+    b = dict(building or {})
+    notes: list[str] = []
+
+    if num_floors >= 5 and not b.get("has_elevator", False):
+        notes.append(
+            f"Здание {num_floors}-этажное — пассажирский лифт обязателен "
+            f"(КМК 2.08.01-89 п.6.1) — добавлен лифт."
+        )
+        b["has_elevator"] = True
+        b["elevators_per_entrance"] = max(1, int(b.get("elevators_per_entrance", 0) or 1))
+
+    if b.get("has_elevator"):
+        n_lifts = int(b.get("elevators_per_entrance", 1) or 1)
+        if num_floors > 9 and n_lifts < 2:
+            notes.append(
+                f"Здание {num_floors}-этажное (>9) — требуется не менее 2 лифтов на подъезд, "
+                f"один грузоподъёмностью ≥630 кг (КМК 2.08.01-89 п.6.2) — увеличено до 2."
+            )
+            b["elevators_per_entrance"] = 2
+
+        cap = float(b.get("elevator_capacity_kg", 0) or 0)
+        if cap < 400:
+            notes.append(
+                f"Грузоподъёмность лифта {cap:.0f} кг < 400 кг (КМК 2.08.01-89 п.6.3) — увеличена до 400 кг."
+            )
+            b["elevator_capacity_kg"] = 400
+
+        stair_w = float(b.get("stair_width_m", 0) or 0)
+        if stair_w < 1.2:
+            notes.append(
+                f"Ширина марша у лифтового холла {stair_w:.2f} м < 1.2 м "
+                f"(КМК 2.08.01-89 п.6.7, путь эвакуации) — увеличена до 1.2 м."
+            )
+            b["stair_width_m"] = 1.2
+
+        apt_per_landing = int(b.get("apartments_per_landing", 0) or 0)
+        if apt_per_landing > 4 and n_lifts >= 1:
+            notes.append(
+                f"{apt_per_landing} квартир на лестничную площадку — допустимо не более 4 "
+                f"на одну лестничную клетку с лифтом (КМК 2.08.01-89 п.6.8). "
+                f"Требуется вторая лестничная клетка."
+            )
+    else:
+        stair_w = float(b.get("stair_width_m", 0) or 0)
+        if stair_w < 1.05:
+            notes.append(
+                f"Ширина марша {stair_w:.2f} м < 1.05 м (КМК 2.08.01-89) — увеличена до 1.05 м."
+            )
+            b["stair_width_m"] = 1.05
+
+    return b, notes

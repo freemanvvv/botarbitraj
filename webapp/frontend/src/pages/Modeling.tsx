@@ -42,6 +42,17 @@ interface ArchPlan {
   foundation_depth_m?: number; norm_ref_foundation?: string;
 }
 
+interface ArchStage {
+  stage: string; description: string; norm_refs?: string[];
+}
+
+interface ArchBuilding {
+  entrances?: number; apartments_per_landing?: number;
+  has_elevator?: boolean; elevators_per_entrance?: number;
+  elevator_capacity_kg?: number; elevator_shaft_m?: string;
+  stair_width_m?: number; riser_shaft_m?: string; electrical_niche_m?: string;
+}
+
 export default function Modeling() {
   const [params, setParams] = useState({ ...DEFAULT_PARAMS });
   const [stats, setStats] = useState<Stats | null>(null);
@@ -64,14 +75,22 @@ export default function Modeling() {
   const [archPlan, setArchPlan] = useState<ArchPlan | null>(null);
   const [archViolations, setArchViolations] = useState<string[]>([]);
   const [archReasoning, setArchReasoning] = useState<ArchReasoning | null>(null);
+  const [archStages, setArchStages] = useState<ArchStage[]>([]);
+  const [archBuilding, setArchBuilding] = useState<ArchBuilding | null>(null);
   const [archStep, setArchStep] = useState<"idle"|"norms"|"planning"|"generating"|"done">("idle");
   const [archError, setArchError] = useState("");
+  const [archModels, setArchModels] = useState<string[]>(["local-model"]);
+  const [archModel, setArchModel] = useState("local-model");
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
     fetch(`${API}/api/model/existing`)
       .then(r => r.json())
       .then(d => { setFiles(d.files); if (d.files.length) setSelectedFile(d.files[0].name); })
+      .catch(() => {});
+    fetch(`${API}/api/chat/models`)
+      .then(r => r.json())
+      .then(d => { if (d.models?.length) { setArchModels(d.models); setArchModel(d.models[0]); } })
       .catch(() => {});
   }, []);
 
@@ -170,7 +189,7 @@ export default function Modeling() {
       const res = await fetch(`${API}/api/model/architect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requirements: archReq }),
+        body: JSON.stringify({ requirements: archReq, model: archModel }),
       });
       clearTimeout(stepTimer); clearTimeout(stepTimer2);
       const d = await res.json();
@@ -182,6 +201,8 @@ export default function Modeling() {
       setArchPlan(d.plan || null);
       setArchReasoning(d.reasoning || null);
       setArchViolations(d.norm_violations_fixed || []);
+      setArchStages(d.stages || []);
+      setArchBuilding(d.building || null);
       setStats(d.stats);
       setSelectedFile(d.filename);
       setParams(prev => ({ ...prev, ...d.params }));
@@ -240,6 +261,16 @@ export default function Modeling() {
             <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 10, lineHeight: 1.6 }}>
               Опиши требования — LLM изучит нормы КМК/ШНК, составит план с обоснованием, затем сгенерирует IFC.
             </p>
+
+            <Label>Локальная модель ИИ</Label>
+            <select
+              value={archModel}
+              onChange={e => setArchModel(e.target.value)}
+              disabled={archLoading}
+              style={{ width: "100%", padding: "8px 10px", marginBottom: 10, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: "0.83rem", fontFamily: "inherit" }}
+            >
+              {archModels.map(m => <option key={m} value={m}>{m}</option>)}
+            </select>
 
             <textarea
               value={archReq}
@@ -308,6 +339,52 @@ export default function Modeling() {
                   <ul style={{ margin: 0, paddingLeft: 16, fontSize: "0.75rem", color: "var(--text)", lineHeight: 1.7 }}>
                     {archViolations.map((v, i) => <li key={i}>{v}</li>)}
                   </ul>
+                </div>
+              )}
+
+              {/* Этапы строительства — снизу вверх */}
+              {archStages.length > 0 && (
+                <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>🏗 Этапы строительства</div>
+                  {archStages.map((s, i) => (
+                    <div key={i} style={{ display: "flex", gap: 10, padding: "6px 0", borderTop: i > 0 ? "1px solid var(--border)" : "none" }}>
+                      <div style={{ width: 20, height: 20, borderRadius: "50%", background: "var(--accent)", color: "#fff", fontSize: "0.7rem", fontWeight: 700, display: "flex", alignItems: "center", justifyContent: "center", flexShrink: 0 }}>{i + 1}</div>
+                      <div style={{ flex: 1 }}>
+                        <div style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text)" }}>{s.stage}</div>
+                        <div style={{ fontSize: "0.75rem", color: "var(--text2)", lineHeight: 1.5, marginTop: 2 }}>{s.description}</div>
+                        {s.norm_refs && s.norm_refs.length > 0 && (
+                          <div style={{ fontSize: "0.68rem", color: "var(--text3)", marginTop: 2 }}>{s.norm_refs.join(", ")}</div>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {/* Лестнично-лифтовой узел и инженерные сети */}
+              {archBuilding && (
+                <div style={{ marginTop: 8, padding: "8px 12px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6 }}>🛗 Лестнично-лифтовой узел</div>
+                  <table style={{ width: "100%", borderCollapse: "collapse", fontSize: "0.75rem" }}>
+                    <tbody>
+                      {[
+                        ["Подъездов", archBuilding.entrances],
+                        ["Квартир на площадке", archBuilding.apartments_per_landing],
+                        ["Лифт", archBuilding.has_elevator ? `да, ${archBuilding.elevators_per_entrance ?? 1} шт./подъезд` : "нет"],
+                        archBuilding.has_elevator ? ["Грузоподъёмность лифта", archBuilding.elevator_capacity_kg ? `${archBuilding.elevator_capacity_kg} кг` : null] : null,
+                        archBuilding.has_elevator ? ["Шахта лифта", archBuilding.elevator_shaft_m] : null,
+                        ["Ширина марша", archBuilding.stair_width_m ? `${archBuilding.stair_width_m} м` : null],
+                        ["Шахта водопровод/канализация", archBuilding.riser_shaft_m],
+                        ["Ниша электрощита", archBuilding.electrical_niche_m],
+                      ].filter((row): row is [string, any] => row !== null && row[1] != null && row[1] !== "")
+                        .map(([label, val]) => (
+                          <tr key={label} style={{ borderTop: "1px solid var(--border)" }}>
+                            <td style={{ padding: "4px 0", color: "var(--text2)" }}>{label}</td>
+                            <td style={{ padding: "4px 0", color: "var(--text)", textAlign: "right" }}>{String(val)}</td>
+                          </tr>
+                        ))}
+                    </tbody>
+                  </table>
                 </div>
               )}
 

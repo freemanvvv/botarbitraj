@@ -547,17 +547,20 @@ def model_architect(req: ArchitectRequest):
 Перед тобой ДЕЙСТВУЮЩИЕ СТРОИТЕЛЬНЫЕ НОРМЫ (КМК/ШНК):
 {norms_block}
 
-ТВОЯ ЗАДАЧА:
-1. Изучи требования заказчика
-2. Применяя нормы выше, рассчитай все параметры здания:
-   - Площадь: исходя из числа людей × норма на человека
-   - Размеры плана: длина × ширина из площади и оптимальных пропорций
-   - Высоту этажа: строго по нормам для данного типа здания
-   - Толщину стен: по КМК 2.03.06-01 в зависимости от этажности
-   - Количество и размеры окон: световой коэффициент 1:8 (жилые) или 1:6 (офис)
-   - Подоконник: по норме для типа здания
-   - Перемычки, колонны, фундамент: по нормам
-3. Для каждого решения УКАЖИ норму-основание (например: «КМК 2.08.01-89 п.2.1»)
+ТВОЯ ЗАДАЧА — спроектировать здание ПО ЭТАПАМ СТРОИТЕЛЬСТВА, снизу вверх:
+1. Котлован и фундамент — глубина заложения, тип фундамента (по этажности и грунту)
+2. Типовой этаж — кол-во подъездов (секций), квартир на лестничной площадке,
+   площади и состав помещений каждой квартиры
+3. Лестнично-лифтовой узел — ширина марша, нужен ли лифт (обязателен от 5 этажей),
+   сколько лифтов на подъезд, грузоподъёмность, размер шахты лифта
+4. Инженерные сети — расположение шахты ВК (вода/канализация), шахты вентиляции,
+   этажных электрощитов; все они должны быть строго друг над другом по вертикали
+5. Кровля — тип, уклон, парапет/свес
+
+На каждом этапе ОБЯЗАТЕЛЬНО применяй нормы выше и УКАЗЫВАЙ норму-основание
+(например: «КМК 2.08.01-89 п.2.1»). Если в требованиях заказчика указано число
+подъездов и квартир на площадке — используй именно их, посчитав лифты/лестницы
+по нормам для этой конфигурации.
 
 Верни ТОЛЬКО валидный JSON без markdown:
 {{
@@ -565,6 +568,44 @@ def model_architect(req: ArchitectRequest):
   "building_type": "жилой/офис/торговый",
   "summary": "Описание проекта (2-3 предложения)",
   "norm_study": "Какие нормы применены и почему (200-400 символов)",
+  "stages": [
+    {{
+      "stage": "Котлован и фундамент",
+      "description": "Глубина заложения, тип фундамента и почему",
+      "norm_refs": ["КМК 2.02.01-98 п.4.1"]
+    }},
+    {{
+      "stage": "Типовой этаж",
+      "description": "Подъезды, квартиры на площадке, состав и площади помещений квартиры",
+      "norm_refs": ["КМК 2.08.01-89 п.2.1"]
+    }},
+    {{
+      "stage": "Лестнично-лифтовой узел",
+      "description": "Марш, лифт(ы), грузоподъёмность, шахта",
+      "norm_refs": ["КМК 2.08.01-89 п.6.1"]
+    }},
+    {{
+      "stage": "Инженерные сети",
+      "description": "Шахта ВК, вентиляция, этажные электрощиты — расположение",
+      "norm_refs": []
+    }},
+    {{
+      "stage": "Кровля",
+      "description": "Тип, уклон, парапет/свес",
+      "norm_refs": []
+    }}
+  ],
+  "building": {{
+    "entrances": 1,
+    "apartments_per_landing": 1,
+    "has_elevator": false,
+    "elevators_per_entrance": 0,
+    "elevator_capacity_kg": 400,
+    "elevator_shaft_m": "1.8x1.8",
+    "stair_width_m": 1.2,
+    "riser_shaft_m": "0.4x0.6",
+    "electrical_niche_m": "0.6x0.9x0.2"
+  }},
   "plan": {{
     "total_area_m2": 150.0,
     "persons": 6,
@@ -669,9 +710,11 @@ def model_architect(req: ArchitectRequest):
         }
 
         # ─── ШАГ 2.5: Детерминированная проверка норм (не доверяем LLM на слово) ──
-        from src.normbase.validator import validate_and_fix_params
+        from src.normbase.validator import validate_and_fix_params, validate_building_meta
         building_type_str = data.get("building_type", "")
         building_params, norm_violations = validate_and_fix_params(building_params, building_type_str)
+        building_meta, building_violations = validate_building_meta(data.get("building", {}), n_floors)
+        norm_violations = norm_violations + building_violations
 
         # ─── ШАГ 3: Генерация IFC ─────────────────────────────────────────────
         from src.ifc_generator import create_max_building
@@ -683,6 +726,8 @@ def model_architect(req: ArchitectRequest):
             "building_type": data.get("building_type", ""),
             "summary": data.get("summary", ""),
             "norm_study": data.get("norm_study", ""),
+            "stages": data.get("stages", []),
+            "building": building_meta,
             "plan": data.get("plan", {}),
             "reasoning": data.get("reasoning", {}),
             "params": building_params,
