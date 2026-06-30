@@ -26,6 +26,7 @@ export default function Archive() {
   const [page, setPage] = useState(1);
   const [filterType, setFilterType] = useState("");
   const [filterStatus, setFilterStatus] = useState("");
+  const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
   const [detail, setDetail] = useState<Doc & { text_preview: string; chunks: number } | null>(null);
@@ -35,21 +36,36 @@ export default function Archive() {
     fetch(`${API}/api/archive/groups`).then((r) => r.json()).then((d) => setGroups(d.groups));
   }, []);
 
+  // Дебаунс: применяем поисковый запрос через 300мс после последнего нажатия
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setSearch(searchInput);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchInput]);
+
   useEffect(() => {
     setLoading(true);
     const params = new URLSearchParams({ page: String(page), page_size: "24" });
     if (filterType) params.set("doc_type", filterType);
     if (filterStatus) params.set("status", filterStatus);
     if (search) params.set("search", search);
+
+    let cancelled = false;
     fetch(`${API}/api/archive/docs?${params}`)
       .then((r) => r.json())
       .then((d) => {
-        setDocs(d.items);
-        setTotal(d.total);
-        setTotalPages(d.total_pages);
-        setLoading(false);
+        if (!cancelled) {
+          setDocs(d.items);
+          setTotal(d.total);
+          setTotalPages(d.total_pages);
+          setLoading(false);
+        }
       })
-      .catch(() => setLoading(false));
+      .catch(() => { if (!cancelled) setLoading(false); });
+
+    return () => { cancelled = true; };
   }, [page, filterType, filterStatus, search]);
 
   const openDetail = async (docId: string) => {
@@ -70,8 +86,8 @@ export default function Archive() {
       <div className="search-bar">
         <input
           placeholder="Поиск по названию, номеру или ID..."
-          value={search}
-          onChange={(e) => { setSearch(e.target.value); setPage(1); }}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
         />
         <div className="toggle-group">
           <button className={`toggle-btn ${viewMode === "grid" ? "active" : ""}`} onClick={() => setViewMode("grid")}>Сетка</button>

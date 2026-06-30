@@ -85,10 +85,13 @@ def archive_docs(
     if status:
         sources = [r for r in sources if r.get("status", "").strip() == status]
     if search:
-        search_lower = search.lower()
+        terms = search.lower().split()
         sources = [
             r for r in sources
-            if search_lower in f"{r.get('doc_type','')} {r.get('number','')} {r.get('title','')} {r.get('id','')}".lower()
+            if all(
+                term in f"{r.get('doc_type','')} {r.get('number','')} {r.get('title','')} {r.get('id','')}".lower()
+                for term in terms
+            )
         ]
 
     total = len(sources)
