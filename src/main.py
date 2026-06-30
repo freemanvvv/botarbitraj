@@ -13,7 +13,6 @@ from src.config import MODELS, NORMATIVES_DIR, OUTPUT_DIR
 from src.lmstudio_client import chat, list_models
 from src.router import route, detect_language, estimate_complexity
 from src.rag_pipeline import SimpleRAG, NormbaseRAG, get_rag
-from src.config import MODELS, NORMATIVES_DIR, OUTPUT_DIR
 from src.document_generator import generate_docx, generate_pdf
 
 

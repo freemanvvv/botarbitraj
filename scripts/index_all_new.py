@@ -1,7 +1,8 @@
 """Index ALL docs from sources.csv with NormBase"""
 import sys
 import os
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "src"))
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "src"))
 
 print("NormBase: полная индексация ВСЕХ новых документов...", flush=True)
 
@@ -17,7 +18,7 @@ client = chromadb.PersistentClient(path=str(nb_config.CHROMA_DIR))
 try:
     client.delete_collection(nb_config.COLLECTION_NAME)
     print("Коллекция очищена.", flush=True)
-except:
+except Exception:
     pass
 
 collection = nb_store.get_collection()
@@ -35,9 +36,9 @@ for i, row in enumerate(rows, 1):
         skipped += 1
         continue
 
-    label = f"{row.get('doc_type','')} {row.get('number','')}" 
+    label = f"{row.get('doc_type','')} {row.get('number','')}"
     print(f"[{i}/{len(rows)}] {row['id']} — {label}", flush=True)
-    
+
     try:
         n = nb_ingest.process_document(collection, row)
         if n:

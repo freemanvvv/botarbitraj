@@ -19,11 +19,20 @@ app = FastAPI(title="Construction AI Copilot")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=[
+        "http://localhost:5173",
+        "http://localhost:3000",
+        "http://127.0.0.1:5173",
+        "http://127.0.0.1:3000",
+    ],
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+from src.config import MODELS as LM_MODELS
+
+# Белый список допустимых ID моделей
+_ALLOWED_MODEL_IDS = {cfg["id"] for cfg in LM_MODELS.values()}
 
 # ─── пути проекта ───
 DATA_DIR = Path(__file__).resolve().parent.parent.parent / "data"
@@ -155,6 +164,8 @@ class ChatRequest(BaseModel):
 @app.post("/api/chat")
 def chat_endpoint(req: ChatRequest):
     """Чат с RAG + локальной LLM."""
+    if req.model not in _ALLOWED_MODEL_IDS:
+        raise HTTPException(400, f"Недопустимая модель: {req.model!r}")
     try:
         from src.lmstudio_client import list_models, chat as lm_chat
         from src.rag_pipeline import NormbaseRAG
@@ -270,15 +281,19 @@ def model_generate(params: BuildingParams):
         raise HTTPException(500, str(e))
 
 
+class BimGenerateRequest(BaseModel):
+    description: str
+
+
 @app.post("/api/model/bim-generate")
-def model_bim_generate(data: dict):
+def model_bim_generate(req: BimGenerateRequest):
     """BIM-пайплайн: текст → IFC (по ТЗ)."""
-    description = data.get("description", "")
-    if not description:
+    if not req.description.strip():
         raise HTTPException(400, "description is required")
     try:
+        description = req.description
         from src.bim_agents import run_pipeline
-        path, stats = run_pipeline(description)
+        path, stats = run_pipeline(req.description)
         return {
             "path": path,
             "stats": stats,
@@ -294,7 +309,9 @@ def model_bim_generate(data: dict):
 @app.get("/api/model/download/{filename}")
 def model_download(filename: str):
     """Скачать IFC-файл."""
-    filepath = OUTPUT_DIR / filename
+    filepath = (OUTPUT_DIR / filename).resolve()
+    if not filepath.is_relative_to(OUTPUT_DIR.resolve()):
+        raise HTTPException(400, "Недопустимое имя файла")
     if not filepath.exists():
         raise HTTPException(404, "Файл не найден")
     return FileResponse(str(filepath), media_type="application/ifc", filename=filename)
@@ -317,7 +334,9 @@ def model_existing():
 @app.delete("/api/model/delete/{filename}")
 def model_delete(filename: str):
     """Удалить IFC-файл."""
-    filepath = OUTPUT_DIR / filename
+    filepath = (OUTPUT_DIR / filename).resolve()
+    if not filepath.is_relative_to(OUTPUT_DIR.resolve()):
+        raise HTTPException(400, "Недопустимое имя файла")
     if not filepath.exists():
         raise HTTPException(404, "Файл не найден")
     os.remove(str(filepath))
@@ -470,7 +489,7 @@ def model_view(filename: str):
                 else:
                     v, f = make_box(px + w/2, py + d/2, pz, w, d, h)
                 geometry.append({"name": wall.Name, "type": "IfcWall", "vertices": v, "faces": f})
-            except:
+            except Exception:
                 pass
 
         # ─── Плиты и крыша (с поворотом) ───
@@ -488,7 +507,7 @@ def model_view(filename: str):
                 v, f = make_box_at(px, py, pz + ridge_h, w, d * y_sign, h, axis, angle, centered=False)
                 etype = "IfcRoof" if (hasattr(slab, "PredefinedType") and slab.PredefinedType == "ROOF") else "IfcSlab"
                 geometry.append({"name": slab.Name, "type": etype, "vertices": v, "faces": f})
-            except:
+            except Exception:
                 pass
 
         # ─── Окна ───
@@ -500,7 +519,7 @@ def model_view(filename: str):
                 d = 0.05
                 v, f = make_box(px, py + d/2, pz, w, d, dh)
                 geometry.append({"name": win.Name, "type": "IfcWindow", "vertices": v, "faces": f})
-            except:
+            except Exception:
                 pass
 
         # ─── Двери ───
@@ -512,7 +531,7 @@ def model_view(filename: str):
                 d = 0.05
                 v, f = make_box(px, py + d/2, pz, w, d, dh)
                 geometry.append({"name": door.Name, "type": "IfcDoor", "vertices": v, "faces": f})
-            except:
+            except Exception:
                 pass
 
         return {"elements": geometry}

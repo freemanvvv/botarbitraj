@@ -20,7 +20,7 @@ def get_embedding_fn():
 
 
 def chunk_text(text: str, chunk_size: int = 1000, overlap: int = 200):
-    """Разбивает текст на чанки."""
+    """Разбивает текст на чанки по chunk_size слов (не символов)."""
     words = text.split()
     chunks = []
     start = 0

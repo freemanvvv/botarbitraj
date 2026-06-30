@@ -2,17 +2,16 @@
 import sys
 import os
 
-# Add project root to path
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
 print("Starting debug...")
 sys.stdout.flush()
 
-from src.rag_pipeline import RAGPipeline
+from src.rag_pipeline import SimpleRAG
 
-print("Creating RAGPipeline...")
+print("Creating SimpleRAG...")
 sys.stdout.flush()
-rag = RAGPipeline()
+rag = SimpleRAG()
 print(f"Collection ready, count: {rag.count()}")
 sys.stdout.flush()
 
