@@ -1,8 +1,18 @@
 import { useState, useEffect, useRef } from "react";
 
+interface RagChunk {
+  citation: string;
+  score: number;
+  doc_type: string;
+  number: string;
+  title: string;
+}
+
 interface Message {
   role: "user" | "bot" | "system";
   content: string;
+  ragChunks?: RagChunk[];
+  ragUsed?: boolean;
 }
 
 const API = "http://localhost:8765";
@@ -61,11 +71,13 @@ export default function ChatTab() {
         body: JSON.stringify({ message: userMsg, model: selectedModel, use_rag: useRag }),
       });
       const data = await res.json();
-      setMessages((prev) => [
-        ...prev,
-        { role: "bot", content: data.response },
-        ...(data.rag_used ? [] : [{ role: "system" as const, content: "ℹ️ RAG отключён — ответ без нормативной базы." }]),
-      ]);
+      const botMsg: Message = {
+        role: "bot",
+        content: data.response,
+        ragChunks: data.rag_chunks ?? [],
+        ragUsed: data.rag_used ?? false,
+      };
+      setMessages((prev) => [...prev, botMsg]);
     } catch (e) {
       setMessages((prev) => [...prev, { role: "bot", content: "❌ Ошибка: не удалось получить ответ. Проверь LM Studio." }]);
     } finally {
@@ -119,9 +131,37 @@ export default function ChatTab() {
       <div className="chat-container">
         <div className="chat-messages">
           {messages.map((m, i) => (
-            <div key={i} className={`msg ${m.role}`}>{m.content}</div>
+            <div key={i}>
+              <div className={`msg ${m.role}`}>{m.content}</div>
+              {m.role === "bot" && useRag && (
+                <div style={{ marginLeft: 8, marginBottom: 8 }}>
+                  {m.ragUsed && m.ragChunks && m.ragChunks.length > 0 ? (
+                    <details style={{ fontSize: "0.75rem", color: "var(--text2)" }}>
+                      <summary style={{ cursor: "pointer", userSelect: "none" }}>
+                        📚 Источники ({m.ragChunks.length})
+                      </summary>
+                      <div style={{ paddingLeft: 12, paddingTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
+                        {m.ragChunks.map((c, j) => (
+                          <div key={j}>
+                            <strong>{c.doc_type} {c.number}</strong>
+                            {c.title ? ` — ${c.title}` : ""}
+                            <span style={{ marginLeft: 6, color: "var(--accent)", fontSize: "0.7rem" }}>
+                              {Math.round(c.score * 100)}%
+                            </span>
+                          </div>
+                        ))}
+                      </div>
+                    </details>
+                  ) : m.ragUsed === false && m.ragChunks !== undefined ? (
+                    <span style={{ fontSize: "0.75rem", color: "var(--danger)" }}>
+                      ⚠️ Релевантных нормативов не найдено в базе
+                    </span>
+                  ) : null}
+                </div>
+              )}
+            </div>
           ))}
-          {loading && <div className="msg bot" style={{ fontStyle: "italic" }}>⏳ Генерация...</div>}
+          {loading && <div className="msg bot" style={{ fontStyle: "italic" }}>⏳ Поиск в нормативах...</div>}
           <div ref={messagesEndRef} />
         </div>
         <div className="chat-input">

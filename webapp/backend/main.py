@@ -172,40 +172,104 @@ def chat_endpoint(req: ChatRequest):
     try:
         from src.lmstudio_client import list_models, chat as lm_chat
         from src.rag_pipeline import NormbaseRAG
-        import re
 
-        # Проверка LM Studio
         try:
-            models = list_models()
+            list_models()
         except Exception:
             raise HTTPException(503, "LM Studio не отвечает. Запусти сервер и загрузи модель.")
 
-        # RAG поиск
         context = ""
+        rag_chunks: list[dict] = []
+
         if req.use_rag:
             rag = NormbaseRAG()
-            results = rag.search(req.message, top_k=5)
-            if results:
+
+            # Query expansion: 2 доп. подзапроса через LLM → лучший recall
+            queries = [req.message]
+            try:
+                exp_prompt = (
+                    "Сгенерируй 2 коротких поисковых запроса (2-5 слов каждый) "
+                    "для поиска в базе строительных нормативов Узбекистана по вопросу:\n"
+                    f"«{req.message}»\n"
+                    "Только сами запросы, каждый с новой строки, без нумерации и пояснений."
+                )
+                expansion = lm_chat(
+                    req.model,
+                    [{"role": "user", "content": exp_prompt}],
+                    stream=False,
+                    max_tokens=80,
+                )
+                for line in expansion.strip().split("\n"):
+                    line = line.strip().lstrip("-*•1234567890. \"'")
+                    if line and len(line) > 3:
+                        queries.append(line)
+                queries = queries[:4]
+            except Exception:
+                pass  # fallback — только оригинальный запрос
+
+            # Поиск по всем подзапросам с дедупликацией
+            seen: set[str] = set()
+            all_results: list[dict] = []
+            for q in queries:
+                for r in rag.search(q, top_k=5):
+                    key = r["text"][:80]
+                    if key not in seen:
+                        seen.add(key)
+                        all_results.append(r)
+
+            # Фильтрация по порогу релевантности (cosine similarity ≥ 0.40)
+            MIN_SCORE = 0.40
+            relevant = [r for r in all_results if r.get("score", 0) >= MIN_SCORE]
+            relevant.sort(key=lambda x: x.get("score", 0), reverse=True)
+            relevant = relevant[:6]
+
+            if relevant:
                 context = "Контекст из нормативных документов Узбекистана:\n\n"
-                for r in results:
+                for r in relevant:
                     meta = r.get("meta", {})
                     src = f"{meta.get('doc_type','')} {meta.get('number','')} — {meta.get('title','')}"
-                    context += f"[{src}]\n{r['text'][:500]}\n\n"
+                    context += f"[{src}]\n{r['text'][:600]}\n\n"
+                rag_chunks = [
+                    {
+                        "citation": r.get("citation", ""),
+                        "score": round(r.get("score", 0), 2),
+                        "doc_type": r.get("meta", {}).get("doc_type", ""),
+                        "number": r.get("meta", {}).get("number", ""),
+                        "title": r.get("meta", {}).get("title", ""),
+                    }
+                    for r in relevant
+                ]
 
-        # Сборка сообщений
-        sys_prompt = req.system_prompt or (
-            "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
-            "Отвечай на русском или узбекском (язык запроса). "
-            "Используй контекст из нормативов и цитируй источник. "
-            "Если в контексте нет точных данных — честно скажи об этом."
-        )
+        # Системный промпт зависит от того, найден ли релевантный контекст
+        if context:
+            sys_prompt = req.system_prompt or (
+                "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
+                "Отвечай ТОЛЬКО на основе приведённых фрагментов нормативов. "
+                "Обязательно ссылайся на документ и пункт. "
+                "Не добавляй информацию из собственных знаний — только то, что есть в контексте. "
+                "Если конкретного ответа в найденных фрагментах нет — прямо скажи об этом."
+            )
+        else:
+            sys_prompt = (
+                "Ты — Construction AI Copilot. "
+                "По данному запросу в базе нормативов Узбекистана не найдено релевантных документов. "
+                "Сообщи пользователю об этом честно. "
+                "Не генерируй ответ из собственных знаний — только скажи, "
+                "что данных в базе нет, и предложи уточнить или переформулировать запрос."
+            )
+
         messages = [{"role": "system", "content": sys_prompt}]
         if context:
             messages.append({"role": "system", "content": context})
         messages.append({"role": "user", "content": req.message})
 
         response = lm_chat(req.model, messages, stream=False)
-        return {"response": response, "model": req.model, "rag_used": bool(context)}
+        return {
+            "response": response,
+            "model": req.model,
+            "rag_used": bool(context),
+            "rag_chunks": rag_chunks,
+        }
     except HTTPException:
         raise
     except Exception as e:
