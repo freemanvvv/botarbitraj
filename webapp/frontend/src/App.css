@@ -56,7 +56,7 @@ body {
 /* ─── Header ─── */
 .app-header {
   margin-bottom: 20px;
-  padding: 16px 20px;
+  padding: 16px 20px 14px;
   background: rgba(28, 28, 30, 0.92);
   backdrop-filter: saturate(180%) blur(20px);
   -webkit-backdrop-filter: saturate(180%) blur(20px);
@@ -64,52 +64,79 @@ body {
   border-radius: var(--radius-lg);
 }
 
+.header-top {
+  margin-bottom: 14px;
+}
+
 .app-title {
   font-size: 1.25rem;
   font-weight: 700;
   letter-spacing: -0.03em;
   color: var(--text);
-  margin-bottom: 14px;
 }
 
-/* Tab bar — Apple segmented control */
+/* Tab bar — tall icon tabs */
 .tab-bar {
   display: flex;
-  gap: 2px;
+  gap: 4px;
   background: var(--fill);
   border-radius: var(--radius);
-  padding: 3px;
-  width: fit-content;
+  padding: 4px;
 }
 
 .tab-btn {
+  flex: 1;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 6px;
-  padding: 7px 16px;
+  justify-content: center;
+  gap: 7px;
+  padding: 14px 12px 12px;
   background: transparent;
   border: none;
-  color: var(--text2);
-  font-size: 0.84rem;
-  font-weight: 500;
+  color: var(--text3);
   cursor: pointer;
   border-radius: 9px;
   transition: background 0.18s ease, color 0.18s ease;
-  white-space: nowrap;
   font-family: inherit;
-  letter-spacing: -0.01em;
+  min-height: 76px;
 }
 
-.tab-btn:hover { color: var(--text); }
+.tab-btn:hover {
+  color: var(--text2);
+  background: var(--fill2);
+}
 
 .tab-btn.active {
   background: var(--bg2);
-  color: var(--text);
-  font-weight: 600;
-  box-shadow: 0 1px 3px rgba(0, 0, 0, 0.35);
+  color: var(--accent);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.4);
 }
 
-.tab-icon { font-size: 0.95rem; }
+.tab-icon {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+}
+
+.tab-icon svg {
+  width: 28px;
+  height: 28px;
+}
+
+.tab-label {
+  font-size: 0.72rem;
+  font-weight: 500;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
+
+.tab-btn.active .tab-label {
+  font-weight: 600;
+}
+
 .app-main { min-height: 70vh; }
 
 /* ─── Search bar ─── */
