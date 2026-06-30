@@ -139,6 +139,151 @@ def _door_geometry(ifc, ctx, w, h, wt, frame_t=0.07):
     return ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", items)
 
 
+# ─── Проёмы: окно/дверь в стене (общие для всех генераторов) ──────────────────
+
+def _add_window_to_wall(ifc, ctx, wall, x_local, z_local, ww, wh, wall_pl, wt):
+    op = ifc.create_entity("IfcOpeningElement", _g(ifc))
+    op.Name = f"Оконный проём {x_local:.1f}"
+    op.ObjectPlacement = _make_placement(ifc, x_local, 0, z_local, relative_to=wall_pl)
+    op_prof = _rect_profile(ifc, ww, wt)
+    op.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+        [_shape_rep(ifc, ctx, [_extrude(ifc, op_prof, wh)])])
+    ifc.create_entity("IfcRelVoidsElement", _g(ifc), None, None,
+                      RelatingBuildingElement=wall, RelatedOpeningElement=op)
+    win = ifc.create_entity("IfcWindow", _g(ifc), None, f"Окно {ww:.1f}×{wh:.1f}")
+    win.OverallWidth = ww
+    win.OverallHeight = wh
+    win.ObjectPlacement = _make_placement(ifc, x_local, 0, z_local, relative_to=wall_pl)
+    win.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+        [_window_geometry(ifc, ctx, ww, wh, wt)])
+    _assign_material(ifc, win, "стеклопакет")
+    ifc.create_entity("IfcRelFillsElement", _g(ifc), None, None,
+                      RelatingOpeningElement=op, RelatedBuildingElement=win)
+    return op, win
+
+
+def _add_door_to_wall(ifc, ctx, wall, x_local, dw, dh, wl_pl, wt, door_name="Дверь"):
+    op = ifc.create_entity("IfcOpeningElement", _g(ifc))
+    op.Name = f"Дверной проём {door_name}"
+    op.ObjectPlacement = _make_placement(ifc, x_local, 0, 0, relative_to=wl_pl)
+    op_prof = _rect_profile(ifc, dw, wt)
+    op.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+        [_shape_rep(ifc, ctx, [_extrude(ifc, op_prof, dh)])])
+    ifc.create_entity("IfcRelVoidsElement", _g(ifc), None, None,
+                      RelatingBuildingElement=wall, RelatedOpeningElement=op)
+    door = ifc.create_entity("IfcDoor", _g(ifc), None, door_name)
+    door.OverallWidth = dw
+    door.OverallHeight = dh
+    door.ObjectPlacement = _make_placement(ifc, x_local, 0, 0, relative_to=wl_pl)
+    door.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+        [_door_geometry(ifc, ctx, dw, dh, wt)])
+    _assign_material(ifc, door, "дерево")
+    ifc.create_entity("IfcRelFillsElement", _g(ifc), None, None,
+                      RelatingOpeningElement=op, RelatedBuildingElement=door)
+    return op, door
+
+
+def _distribute_windows(wall_span, n_windows, ww, enabled=True):
+    positions = []
+    if n_windows <= 0 or not enabled:
+        return positions
+    gap = (wall_span - n_windows * ww) / (n_windows + 1)
+    if gap < 0.3:
+        n_windows = max(1, int(wall_span // (ww + 0.5)))
+        gap = (wall_span - n_windows * ww) / (n_windows + 1)
+    for i in range(n_windows):
+        positions.append(gap * (i + 1) + ww * i)
+    return positions
+
+
+# ─── Крыша (общая для всех генераторов) ────────────────────────────────────────
+#
+# Стены верхнего этажа заканчиваются на Z = height + slab_thickness (= roof_z).
+# Крыша начинается ровно с этого уровня — никакого зазора.
+# Геометрия — см. подробные комментарии в create_max_building (история фикса
+# "крыша не на стенах стоит").
+
+def _build_roof(ifc, ctx, length, width, height, slab_thickness, wt, roof_type):
+    g = lambda: _g(ifc)
+    roof_z = height + slab_thickness
+    roof_elems = []
+
+    if roof_type == "gable":
+        oh_x = 0.6
+        oh_y = 0.45
+        slope = 0.45
+        ridge_h = (width / 2) * slope
+        roof_length = length + 2 * oh_x
+
+        etr_y = width / 2 + oh_y
+        sl_d = math.sqrt(etr_y ** 2 + ridge_h ** 2)
+
+        ls = ifc.create_entity("IfcSlab", g(), None, "Левый скат кровли")
+        ls.PredefinedType = "ROOF"
+        ls.ObjectPlacement = _make_placement(
+            ifc, -oh_x, -oh_y, roof_z,
+            x_axis=_d3(ifc, 1, 0, 0),
+            z_axis=_d3(ifc, 0, -ridge_h / sl_d, etr_y / sl_d),
+        )
+        ls_prof = _rect_profile(ifc, roof_length, sl_d, cx=roof_length/2, cy=sl_d/2)
+        ls.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, ls_prof, slab_thickness)])])
+        _assign_material(ifc, ls, "металлочерепица")
+        roof_elems.append(ls)
+
+        rs = ifc.create_entity("IfcSlab", g(), None, "Правый скат кровли")
+        rs.PredefinedType = "ROOF"
+        rs.ObjectPlacement = _make_placement(
+            ifc, -oh_x, width + oh_y, roof_z,
+            x_axis=_d3(ifc, 1, 0, 0),
+            z_axis=_d3(ifc, 0, -ridge_h / sl_d, -etr_y / sl_d),
+        )
+        rs_prof = _rect_profile(ifc, roof_length, sl_d, cx=roof_length/2, cy=sl_d/2)
+        rs.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, rs_prof, slab_thickness)])])
+        _assign_material(ifc, rs, "металлочерепица")
+        roof_elems.append(rs)
+
+        for fx in [-wt, length]:
+            fp = ifc.create_entity("IfcSlab", g(), None, f"Фронтон x={fx:.0f}")
+            fp.PredefinedType = "NOTDEFINED"
+            fp.ObjectPlacement = _make_placement(
+                ifc, fx, 0, roof_z,
+                x_axis=_d3(ifc, 0, 1, 0),
+                z_axis=_d3(ifc, 1, 0, 0),
+            )
+            fp.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                [_shape_rep(ifc, ctx, [_extrude(ifc, _triangle_profile(ifc, width, ridge_h), wt)])])
+            _assign_material(ifc, fp, "кирпич керамический")
+            roof_elems.append(fp)
+
+    else:
+        flat = ifc.create_entity("IfcSlab", g(), None, "Плоская кровля")
+        flat.PredefinedType = "ROOF"
+        flat.ObjectPlacement = _make_placement(ifc, 0, 0, roof_z)
+        flat.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, length, width, cx=length/2, cy=width/2), slab_thickness)])])
+        _assign_material(ifc, flat, "рубероид")
+        roof_elems.append(flat)
+
+        parapet_h = 0.6
+        for px, py, plen, pdir in [
+            (0, 0, length, (1, 0, 0)), (0, width, length, (1, 0, 0)),
+            (0, 0, width, (0, 1, 0)), (length, 0, width, (0, 1, 0)),
+        ]:
+            par = ifc.create_entity("IfcWall", g())
+            par.Name = "Парапет"
+            par.ObjectPlacement = _make_placement(ifc, px, py, roof_z + slab_thickness,
+                                                   x_axis=_d3(ifc, *pdir))
+            par_prof = _rect_profile(ifc, plen, wt)
+            par.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                [_shape_rep(ifc, ctx, [_extrude(ifc, par_prof, parapet_h)])])
+            _assign_material(ifc, par, "кирпич керамический")
+            roof_elems.append(par)
+
+    return roof_elems
+
+
 # ─── Основная функция генерации ────────────────────────────────────────────────
 
 def create_max_building(
@@ -218,58 +363,15 @@ def create_max_building(
         ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
                           RelatedElements=[found], RelatingStructure=found_storey)
 
-    # ─── Вспомогательные: проём + окно/дверь ─────────────────────────────────
+    # ─── Вспомогательные: проём + окно/дверь (обёртки над модульными хелперами) ──
     def add_window_to_wall(wall, x_local, z_local, ww, wh, wall_pl):
-        op = ifc.create_entity("IfcOpeningElement", g())
-        op.Name = f"Оконный проём {x_local:.1f}"
-        op.ObjectPlacement = _make_placement(ifc, x_local, 0, z_local, relative_to=wall_pl)
-        op_prof = _rect_profile(ifc, ww, wt)
-        op.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_shape_rep(ifc, ctx, [_extrude(ifc, op_prof, wh)])])
-        ifc.create_entity("IfcRelVoidsElement", g(), None, None,
-                          RelatingBuildingElement=wall, RelatedOpeningElement=op)
-        win = ifc.create_entity("IfcWindow", g(), None, f"Окно {ww:.1f}×{wh:.1f}")
-        win.OverallWidth = ww
-        win.OverallHeight = wh
-        win.ObjectPlacement = _make_placement(ifc, x_local, 0, z_local, relative_to=wall_pl)
-        win.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_window_geometry(ifc, ctx, ww, wh, wt)])
-        _assign_material(ifc, win, "стеклопакет")
-        ifc.create_entity("IfcRelFillsElement", g(), None, None,
-                          RelatingOpeningElement=op, RelatedBuildingElement=win)
-        return op, win
+        return _add_window_to_wall(ifc, ctx, wall, x_local, z_local, ww, wh, wall_pl, wt)
 
     def add_door_to_wall(wall, x_local, dw, dh, wl_pl, door_name="Дверь"):
-        op = ifc.create_entity("IfcOpeningElement", g())
-        op.Name = f"Дверной проём {door_name}"
-        op.ObjectPlacement = _make_placement(ifc, x_local, 0, 0, relative_to=wl_pl)
-        op_prof = _rect_profile(ifc, dw, wt)
-        op.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_shape_rep(ifc, ctx, [_extrude(ifc, op_prof, dh)])])
-        ifc.create_entity("IfcRelVoidsElement", g(), None, None,
-                          RelatingBuildingElement=wall, RelatedOpeningElement=op)
-        door = ifc.create_entity("IfcDoor", g(), None, door_name)
-        door.OverallWidth = dw
-        door.OverallHeight = dh
-        door.ObjectPlacement = _make_placement(ifc, x_local, 0, 0, relative_to=wl_pl)
-        door.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_door_geometry(ifc, ctx, dw, dh, wt)])
-        _assign_material(ifc, door, "дерево")
-        ifc.create_entity("IfcRelFillsElement", g(), None, None,
-                          RelatingOpeningElement=op, RelatedBuildingElement=door)
-        return op, door
+        return _add_door_to_wall(ifc, ctx, wall, x_local, dw, dh, wl_pl, wt, door_name)
 
     def distribute_windows(wall_span, n_windows, ww):
-        positions = []
-        if n_windows <= 0 or not add_windows:
-            return positions
-        gap = (wall_span - n_windows * ww) / (n_windows + 1)
-        if gap < 0.3:
-            n_windows = max(1, int(wall_span // (ww + 0.5)))
-            gap = (wall_span - n_windows * ww) / (n_windows + 1)
-        for i in range(n_windows):
-            positions.append(gap * (i + 1) + ww * i)
-        return positions
+        return _distribute_windows(wall_span, n_windows, ww, add_windows)
 
     # ─── Ригели и прогоны (балки) ─────────────────────────────────────────────
     # КМК 2.03.01-96 п.3.2: h_ригеля ≥ пролёт/10, ширина ≥ высота/2
@@ -549,116 +651,7 @@ def create_max_building(
                           RelatedElements=elems, RelatingStructure=storey)
 
     # ─── Крыша ────────────────────────────────────────────────────────────────
-    #
-    # Стены верхнего этажа заканчиваются на Z = height + slab_thickness (= roof_z).
-    # Крыша начинается ровно с этого уровня — никакого зазора.
-    #
-    # СКАТНАЯ КРЫША (gable):
-    #   Левый скат:  от карниза (y = -oh_y, z = roof_z)
-    #                до конька  (y = width/2, z = roof_z + ridge_h)
-    #   Правый скат: от конька  (y = width/2, z = roof_z + ridge_h)
-    #                до карниза (y = width + oh_y, z = roof_z)
-    #
-    # Геометрия через IfcExtrudedAreaSolid:
-    #   Ось Z местной СК = нормаль к плоскости ската (направление экструзии)
-    #   Ось X = вдоль конька (1,0,0)
-    #   Локальная ось Y = от карниза к коньку (вычисляется через Z×X)
-    #
-    # Для левого ската:
-    #   etr_y = width/2 + oh_y  (горизонтальное расстояние карниз→конёк по Y)
-    #   sl_d  = sqrt(etr_y² + ridge_h²) (длина ската по откосу)
-    #   Нужная ось Y_local = (0, etr_y/sl_d, ridge_h/sl_d)
-    #   Y_local = Axis × RefDir → Axis = (0, -ridge_h/sl_d, etr_y/sl_d)
-    #
-    # Для правого ската:
-    #   Origin у правого карниза (y = width + oh_y)
-    #   Y_local = (0, -etr_y/sl_d, ridge_h/sl_d)  ← Y уменьшается к коньку
-    #   Axis = (0, -ridge_h/sl_d, -etr_y/sl_d)
-    #
-    # Профиль прямоугольника: (roof_length × sl_d), начиная с (0,0) в местной СК,
-    #   достигает ровно конька при local_Y = sl_d.
-    roof_z = height + slab_thickness
-    roof_elems = []
-
-    if roof_type == "gable":
-        oh_x = 0.6      # свес вдоль конька (X)
-        oh_y = 0.45     # свес карниза за стену (Y)
-        slope = 0.45    # тангенс угла: ridge_h = slope × (width/2)
-        ridge_h = (width / 2) * slope
-        roof_length = length + 2 * oh_x
-
-        etr_y = width / 2 + oh_y                        # горизонт. расстояние карниз→конёк
-        sl_d = math.sqrt(etr_y ** 2 + ridge_h ** 2)    # длина ската по откосу
-
-        # Левый скат (origin у карниза y = -oh_y)
-        ls = ifc.create_entity("IfcSlab", g(), None, "Левый скат кровли")
-        ls.PredefinedType = "ROOF"
-        ls.ObjectPlacement = _make_placement(
-            ifc, -oh_x, -oh_y, roof_z,
-            x_axis=_d3(ifc, 1, 0, 0),
-            z_axis=_d3(ifc, 0, -ridge_h / sl_d, etr_y / sl_d),
-        )
-        ls_prof = _rect_profile(ifc, roof_length, sl_d, cx=roof_length/2, cy=sl_d/2)
-        ls.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_shape_rep(ifc, ctx, [_extrude(ifc, ls_prof, slab_thickness)])])
-        _assign_material(ifc, ls, "металлочерепица")
-        roof_elems.append(ls)
-
-        # Правый скат (origin у карниза y = width + oh_y)
-        rs = ifc.create_entity("IfcSlab", g(), None, "Правый скат кровли")
-        rs.PredefinedType = "ROOF"
-        rs.ObjectPlacement = _make_placement(
-            ifc, -oh_x, width + oh_y, roof_z,
-            x_axis=_d3(ifc, 1, 0, 0),
-            z_axis=_d3(ifc, 0, -ridge_h / sl_d, -etr_y / sl_d),
-        )
-        rs_prof = _rect_profile(ifc, roof_length, sl_d, cx=roof_length/2, cy=sl_d/2)
-        rs.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_shape_rep(ifc, ctx, [_extrude(ifc, rs_prof, slab_thickness)])])
-        _assign_material(ifc, rs, "металлочерепица")
-        roof_elems.append(rs)
-
-        # Фронтоны (треугольные торцевые стены на уровне чердака)
-        # RefDir=(0,1,0), Axis=(1,0,0) → Y_local=(0,0,1)=world Z
-        # Профиль: X_local→world Y, Y_local→world Z → треугольник в YZ-плоскости
-        for fx in [-wt, length]:
-            fp = ifc.create_entity("IfcSlab", g(), None, f"Фронтон x={fx:.0f}")
-            fp.PredefinedType = "NOTDEFINED"
-            fp.ObjectPlacement = _make_placement(
-                ifc, fx, 0, roof_z,
-                x_axis=_d3(ifc, 0, 1, 0),
-                z_axis=_d3(ifc, 1, 0, 0),
-            )
-            # Треугольник в 2D местных координатах: X_local=world Y, Y_local=world Z
-            fp.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-                [_shape_rep(ifc, ctx, [_extrude(ifc, _triangle_profile(ifc, width, ridge_h), wt)])])
-            _assign_material(ifc, fp, "кирпич керамический")
-            roof_elems.append(fp)
-
-    else:
-        # Плоская крыша с парапетом
-        flat = ifc.create_entity("IfcSlab", g(), None, "Плоская кровля")
-        flat.PredefinedType = "ROOF"
-        flat.ObjectPlacement = _make_placement(ifc, 0, 0, roof_z)
-        flat.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, length, width, cx=length/2, cy=width/2), slab_thickness)])])
-        _assign_material(ifc, flat, "рубероид")
-        roof_elems.append(flat)
-
-        parapet_h = 0.6
-        for px, py, plen, pdir in [
-            (0, 0, length, (1, 0, 0)), (0, width, length, (1, 0, 0)),
-            (0, 0, width, (0, 1, 0)), (length, 0, width, (0, 1, 0)),
-        ]:
-            par = ifc.create_entity("IfcWall", g())
-            par.Name = "Парапет"
-            par.ObjectPlacement = _make_placement(ifc, px, py, roof_z + slab_thickness,
-                                                   x_axis=_d3(ifc, *pdir))
-            par_prof = _rect_profile(ifc, plen, wt)
-            par.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-                [_shape_rep(ifc, ctx, [_extrude(ifc, par_prof, parapet_h)])])
-            _assign_material(ifc, par, "кирпич керамический")
-            roof_elems.append(par)
+    roof_elems = _build_roof(ifc, ctx, length, width, height, slab_thickness, wt, roof_type)
 
     if last_storey and roof_elems:
         ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
@@ -681,6 +674,394 @@ def create_max_building(
         "stairs":   len(ifc.by_type("IfcStairFlight")),
         "openings": len(ifc.by_type("IfcOpeningElement")),
         "storeys":  len(ifc.by_type("IfcBuildingStorey")),
+    }
+    return out, stats
+
+
+def _parse_dims(s, default):
+    """'1.8x1.8' → (1.8, 1.8); '0.6x0.9x0.2' → (0.6, 0.9, 0.2)."""
+    try:
+        parts = [float(p) for p in str(s).lower().replace("х", "x").split("x")]
+        return tuple(parts) if parts else default
+    except Exception:
+        return default
+
+
+def _set_pset(ifc, product, pset_name, props: dict):
+    vals = []
+    for k, v in props.items():
+        if isinstance(v, (int, float)):
+            iv = ifc.create_entity("IfcReal", float(v)) if isinstance(v, float) else ifc.create_entity("IfcInteger", int(v))
+        else:
+            iv = ifc.create_entity("IfcLabel", str(v))
+        vals.append(ifc.create_entity("IfcPropertySingleValue", k, None, iv, None))
+    pset = ifc.create_entity("IfcPropertySet", _g(ifc), None, pset_name, None, vals)
+    ifc.create_entity("IfcRelDefinesByProperties", _g(ifc), None, None,
+                      RelatedObjects=[product], RelatingPropertyDefinition=pset)
+
+
+def create_apartment_building(
+    name: str = "Жилой комплекс",
+    num_floors: int = 9,
+    floor_height: float = 3.0,
+    entrances: int = 1,
+    apartments_per_landing: int = 2,
+    apt_width: float = 6.5,
+    apt_depth: float = 11.0,
+    has_elevator: bool = True,
+    elevators_per_entrance: int = 1,
+    elevator_capacity_kg: float = 400,
+    elevator_shaft_m: str = "1.8x1.8",
+    stair_width_m: float = 1.2,
+    riser_shaft_m: str = "0.4x0.6",
+    electrical_niche_m: str = "0.6x0.9x0.2",
+    wall_thickness: float = 0.4,
+    slab_thickness: float = 0.2,
+    roof_type: str = "flat",
+    add_windows: bool = True,
+    add_doors: bool = True,
+    add_columns: bool = True,
+    add_beams: bool = True,
+    add_foundation: bool = True,
+    window_width: float = 1.2,
+    window_height: float = 1.5,
+    window_sill: float = 0.9,
+    door_width: float = 0.9,
+    door_height: float = 2.1,
+) -> tuple:
+    """
+    Многоподъездный жилой дом: каждый подъезд — лестнично-лифтовой узел
+    (марш + лифт(ы) IfcTransportElement + инженерные шахты ВК/электрощит,
+    повторённые по этажам с одинаковыми X,Y) и квартиры по обе стороны
+    корпуса с генеративной внутренней перегородкой (КМК 2.08.01-89 п.6.1-6.8).
+    """
+    if not IFC_AVAILABLE:
+        raise ImportError("IfcOpenShell не установлен")
+
+    wt = wall_thickness
+    elev_w, elev_d = _parse_dims(elevator_shaft_m, (1.8, 1.8))
+    riser_w, riser_d = _parse_dims(riser_shaft_m, (0.4, 0.6))
+    elec_w, elec_h, elec_t = _parse_dims(electrical_niche_m, (0.6, 0.9, 0.2))
+    stair_w = max(1.05, stair_width_m)
+    n_elev = elevators_per_entrance if has_elevator else 0
+
+    core_w = stair_w + 0.3 + n_elev * (elev_w + 0.2) + riser_w + 0.2
+    section_w = apartments_per_landing * apt_width + core_w
+    length = entrances * section_w
+    width = apt_depth
+    height = floor_height * num_floors
+
+    ifc = ifcopenshell.file(schema="IFC4")
+    g = lambda: _g(ifc)
+
+    proj = ifc.create_entity("IfcProject", g(), None, name)
+    wcs = ifc.create_entity("IfcAxis2Placement3D",
+        _cp3(ifc, 0, 0, 0), _d3(ifc, 0, 0, 1), _d3(ifc, 1, 0, 0))
+    ctx = ifc.create_entity("IfcGeometricRepresentationContext",
+        "Model", "Model", 3, 1e-5, wcs, None)
+    ifc.create_entity("IfcGeometricRepresentationContext",
+        "Plan", "Plan", 2, 1e-5, wcs, None)
+    unit_m = ifc.create_entity("IfcSIUnit", None, "LENGTHUNIT", None, "METRE")
+    unit_a = ifc.create_entity("IfcSIUnit", None, "AREAUNIT", None, "SQUARE_METRE")
+    unit_v = ifc.create_entity("IfcSIUnit", None, "VOLUMEUNIT", None, "CUBIC_METRE")
+    ifc.create_entity("IfcUnitAssignment", [unit_m, unit_a, unit_v])
+
+    site = ifc.create_entity("IfcSite", g(), None, "Site")
+    bldg = ifc.create_entity("IfcBuilding", g(), None, name)
+    bldg.CompositionType = "ELEMENT"
+    ifc.create_entity("IfcRelAggregates", g(), None, None, RelatingObject=proj, RelatedObjects=[site])
+    ifc.create_entity("IfcRelAggregates", g(), None, None, RelatingObject=site, RelatedObjects=[bldg])
+
+    # ─── Фундамент (КМК 2.02.01-98 п.4.1-4.2) ──────────────────────────────────
+    if add_foundation:
+        found_overhang = max(0.1, wt * 0.25)
+        found_depth = 0.6
+        found = ifc.create_entity("IfcFooting", g(), None, "Ленточный фундамент")
+        found.PredefinedType = "STRIP_FOOTING"
+        found.ObjectPlacement = _make_placement(ifc, -found_overhang, -found_overhang, -found_depth)
+        f_prof = _rect_profile(ifc, length + 2 * found_overhang, width + 2 * found_overhang,
+                                cx=(length + 2*found_overhang)/2, cy=(width + 2*found_overhang)/2)
+        found.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, f_prof, found_depth)])])
+        _assign_material(ifc, found, "бетон")
+        found_storey = ifc.create_entity("IfcBuildingStorey", g(), None, "Фундамент")
+        ifc.create_entity("IfcRelAggregates", g(), None, None,
+                          RelatingObject=bldg, RelatedObjects=[found_storey])
+        ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
+                          RelatedElements=[found], RelatingStructure=found_storey)
+
+    # ─── Колонны / балки: сетка по длине корпуса (шаг ≤ 6 м) + торцы ───────────
+    beam_h = max(0.25, min(0.60, min(length, width) / 14.0))
+    beam_w = max(0.20, beam_h * 0.5)
+    col_xs = sorted(set([0.0, float(length)] + [i * section_w for i in range(1, entrances)]))
+    if length / max(1, len(col_xs) - 1) > 6.0:
+        step = length / round(length / 6.0)
+        col_xs = sorted(set(col_xs + [round(step * i, 2) for i in range(1, round(length / step))]))
+    col_ys = [0.0, float(width)]
+
+    # Стена-разделитель шахта/лестница внутри core (КМК 2.08.01-89 п.6.7)
+    stair_run_d = 0.28 * max(8, round(floor_height / 0.175))
+
+    last_storey = None
+    for floor_i in range(num_floors):
+        z0 = floor_i * floor_height
+        wz = z0 + slab_thickness
+        ceil_z = wz + floor_height
+
+        storey = ifc.create_entity("IfcBuildingStorey", g(), None, f"Этаж {floor_i+1}")
+        ifc.create_entity("IfcRelAggregates", g(), None, None,
+                          RelatingObject=bldg, RelatedObjects=[storey])
+        last_storey = storey
+        elems = []
+
+        # ── Перекрытие на весь корпус ───────────────────────────────────────
+        slab = ifc.create_entity("IfcSlab", g(), None, f"Перекрытие эт.{floor_i+1}")
+        slab.PredefinedType = "FLOOR"
+        slab.ObjectPlacement = _make_placement(ifc, 0, 0, z0)
+        sl_prof = _rect_profile(ifc, length, width, cx=length/2, cy=width/2)
+        slab.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, sl_prof, slab_thickness)])])
+        _assign_material(ifc, slab, "железобетон")
+        elems.append(slab)
+
+        # ── Наружные стены (фасад/тыл на всю длину, торцы по краям) ─────────
+        inner_w = width - 2 * wt
+        wf = ifc.create_entity("IfcWall", g(), None, f"Фасад эт.{floor_i+1}")
+        wf.ObjectPlacement = _make_placement(ifc, 0, width, wz)
+        wf.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, length, wt, cx=length/2, cy=wt/2), floor_height)])])
+        _assign_material(ifc, wf, "кирпич керамический")
+        elems.append(wf)
+
+        wb = ifc.create_entity("IfcWall", g(), None, f"Задняя стена эт.{floor_i+1}")
+        wb.ObjectPlacement = _make_placement(ifc, 0, -wt, wz)
+        wb.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, length, wt, cx=length/2, cy=wt/2), floor_height)])])
+        _assign_material(ifc, wb, "кирпич керамический")
+        elems.append(wb)
+
+        wl = ifc.create_entity("IfcWall", g(), None, f"Торец слева эт.{floor_i+1}")
+        wl.ObjectPlacement = _make_placement(ifc, -wt, wt, wz, _d3(ifc, 0, 1, 0))
+        wl.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, inner_w, wt, cx=inner_w/2, cy=wt/2), floor_height)])])
+        _assign_material(ifc, wl, "кирпич керамический")
+        elems.append(wl)
+
+        wr = ifc.create_entity("IfcWall", g(), None, f"Торец справа эт.{floor_i+1}")
+        wr.ObjectPlacement = _make_placement(ifc, length, wt, wz, _d3(ifc, 0, 1, 0))
+        wr.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, inner_w, wt, cx=inner_w/2, cy=wt/2), floor_height)])])
+        _assign_material(ifc, wr, "кирпич керамический")
+        elems.append(wr)
+
+        # ── Колонны и ригели/прогоны ─────────────────────────────────────────
+        if add_columns:
+            col_size = max(0.3, wt)
+            for cx in col_xs:
+                for cy in col_ys:
+                    col = ifc.create_entity("IfcColumn", g(), None, f"Колонна {cx:.0f},{cy:.0f} эт.{floor_i+1}")
+                    col.PredefinedType = "COLUMN"
+                    col.ObjectPlacement = _make_placement(ifc, cx - col_size/2, cy - col_size/2, wz)
+                    col.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                        [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, col_size, col_size, cx=col_size/2, cy=col_size/2), floor_height)])])
+                    _assign_material(ifc, col, "железобетон")
+                    elems.append(col)
+
+        if add_beams:
+            for bx in col_xs:
+                beam = ifc.create_entity("IfcBeam", g(), None, f"Ригель x={bx:.0f} эт.{floor_i+1}")
+                beam.PredefinedType = "BEAM"
+                beam.ObjectPlacement = _make_placement(ifc, bx, 0, ceil_z, x_axis=_d3(ifc, 1, 0, 0), z_axis=_d3(ifc, 0, 1, 0))
+                beam.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                    [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, beam_w, beam_h, cx=0, cy=beam_h/2), width)])])
+                _assign_material(ifc, beam, "железобетон")
+                elems.append(beam)
+            for by in col_ys:
+                beam = ifc.create_entity("IfcBeam", g(), None, f"Прогон y={by:.0f} эт.{floor_i+1}")
+                beam.PredefinedType = "BEAM"
+                beam.ObjectPlacement = _make_placement(ifc, 0, by, ceil_z, x_axis=_d3(ifc, 0, 1, 0), z_axis=_d3(ifc, 1, 0, 0))
+                beam.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                    [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, beam_w, beam_h, cx=0, cy=-beam_h/2), length)])])
+                _assign_material(ifc, beam, "железобетон")
+                elems.append(beam)
+
+        # ── Подъезды: лестнично-лифтовой узел + квартиры по обе стороны ──────
+        for sec_i in range(entrances):
+            sx0 = sec_i * section_w
+            core_x0 = sx0 + (apartments_per_landing // 2) * apt_width
+            n_left = apartments_per_landing // 2
+            n_right = apartments_per_landing - n_left
+
+            # Стены, отделяющие core от квартир и подъезд от подъезда
+            party_xs = [sx0] if sec_i > 0 else []
+            for px in [core_x0, core_x0 + core_w] + party_xs:
+                if px <= 0.01 or px >= length - 0.01:
+                    continue
+                pw = ifc.create_entity("IfcWall", g(), None, f"Стена x={px:.1f} эт.{floor_i+1}")
+                pw.ObjectPlacement = _make_placement(ifc, px, wt, wz, _d3(ifc, 0, 1, 0))
+                pw.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                    [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, inner_w, wt * 0.5, cx=inner_w/2, cy=wt*0.25), floor_height)])])
+                _assign_material(ifc, pw, "кирпич керамический")
+                elems.append(pw)
+
+            # Входная дверь в подъезд (1-й этаж, по центру фасада core)
+            if add_doors and floor_i == 0:
+                door_x = core_x0 + core_w / 2 - door_width / 2
+                op_d, d_elem = _add_door_to_wall(ifc, ctx, wf, door_x, door_width, door_height, wf.ObjectPlacement, wt, f"Вход в подъезд {sec_i+1}")
+                elems.extend([op_d, d_elem])
+
+            # ── Лестничный марш core ────────────────────────────────────────
+            step_rise = min(0.175, floor_height / max(8, round(floor_height / 0.175)))
+            n_steps = max(8, round(floor_height / step_rise))
+            stair_run = n_steps * 0.28
+            stair_x = core_x0 + 0.15
+            stair_y = wt + 0.15
+            if stair_y + stair_run + 0.5 < width - wt:
+                sl_d = math.sqrt(stair_run**2 + floor_height**2)
+                march = ifc.create_entity("IfcStairFlight", g(), None, f"Марш подъезд {sec_i+1} эт.{floor_i+1}")
+                march.PredefinedType = "STRAIGHT"
+                march.NumberOfRisers = n_steps
+                march.NumberOfTreads = max(1, n_steps - 1)
+                march.RiserHeight = floor_height / n_steps
+                march.TreadLength = 0.28
+                march.ObjectPlacement = _make_placement(
+                    ifc, stair_x, stair_y, wz,
+                    x_axis=_d3(ifc, 1, 0, 0),
+                    z_axis=_d3(ifc, 0, -floor_height / sl_d, stair_run / sl_d),
+                )
+                march.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                    [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, stair_w, sl_d, cx=stair_w/2, cy=sl_d/2), 0.18)])])
+                _assign_material(ifc, march, "железобетон")
+                elems.append(march)
+
+                landing_y = stair_y + stair_run
+                if landing_y + 1.2 < width - wt:
+                    landing = ifc.create_entity("IfcSlab", g(), None, f"Площадка подъезд {sec_i+1} эт.{floor_i+1}")
+                    landing.PredefinedType = "LANDING"
+                    landing.ObjectPlacement = _make_placement(ifc, stair_x, landing_y, wz + floor_height - slab_thickness)
+                    landing.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                        [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, stair_w, 1.2, cx=stair_w/2, cy=0.6), slab_thickness)])])
+                    _assign_material(ifc, landing, "железобетон")
+                    elems.append(landing)
+
+            # ── Лифт(ы): шахта + кабина IfcTransportElement (КМК 2.08.01-89 п.6.1-6.3) ──
+            if has_elevator:
+                for ei in range(n_elev):
+                    ex = stair_x + stair_w + 0.3 + ei * (elev_w + 0.2)
+                    ey = wt + 0.15
+                    shaft_wall_t = 0.2
+                    for wx, wy, wlen, wdir in [
+                        (ex - shaft_wall_t, ey, elev_d, (0, 1, 0)),
+                        (ex + elev_w, ey, elev_d, (0, 1, 0)),
+                        (ex, ey + elev_d, elev_w, (1, 0, 0)),
+                    ]:
+                        sw = ifc.create_entity("IfcWall", g(), None, f"Стена шахты лифта {sec_i+1}.{ei+1} эт.{floor_i+1}")
+                        sw.ObjectPlacement = _make_placement(ifc, wx, wy, wz, x_axis=_d3(ifc, *wdir))
+                        sw.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, wlen, shaft_wall_t), floor_height)])])
+                        _assign_material(ifc, sw, "железобетон")
+                        elems.append(sw)
+
+                    if floor_i == 0:
+                        cabin = ifc.create_entity("IfcTransportElement", g(), None, f"Лифт {sec_i+1}.{ei+1}")
+                        cabin.PredefinedType = "ELEVATOR"
+                        cabin.ObjectPlacement = _make_placement(ifc, ex, ey, slab_thickness)
+                        cab_w, cab_d, cab_h = elev_w * 0.85, elev_d * 0.85, 2.1
+                        cabin.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                            [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, cab_w, cab_d), height)])])
+                        _assign_material(ifc, cabin, "сталь")
+                        _set_pset(ifc, cabin, "Pset_ElevatorCapacity", {
+                            "RatedLoad_kg": elevator_capacity_kg,
+                            "CabinWidth_m": round(cab_w, 2),
+                            "CabinDepth_m": round(cab_d, 2),
+                        })
+                        elems.append(cabin)
+
+            # ── Инженерные шахты: ВК + электрощит, по одной на этаж (КМК) ───
+            riser_x = core_x0 + core_w - riser_w - 0.15
+            riser_y = width - wt - riser_d - 0.15
+            riser = ifc.create_entity("IfcFlowSegment", g(), None, f"Шахта ВК подъезд {sec_i+1} эт.{floor_i+1}")
+            riser.ObjectPlacement = _make_placement(ifc, riser_x, riser_y, wz)
+            riser.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, riser_w, riser_d), floor_height)])])
+            _assign_material(ifc, riser, "чугун")
+            elems.append(riser)
+
+            elec_x = core_x0 + 0.1
+            elec_y = width - wt - elec_t - 0.15
+            elec = ifc.create_entity("IfcBuildingElementProxy", g(), None, f"Электрощит подъезд {sec_i+1} эт.{floor_i+1}")
+            elec.PredefinedType = "USERDEFINED"
+            elec.ObjectPlacement = _make_placement(ifc, elec_x, elec_y, wz)
+            elec.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, elec_w, elec_t), elec_h)])])
+            _assign_material(ifc, elec, "сталь")
+            elems.append(elec)
+
+            # ── Квартиры слева и справа от core ──────────────────────────────
+            apt_idx = 1
+            for side, n_side in [("left", n_left), ("right", n_right)]:
+                for k in range(n_side):
+                    if side == "left":
+                        ax0 = core_x0 - (k + 1) * apt_width
+                    else:
+                        ax0 = core_x0 + core_w + k * apt_width
+
+                    # перегородка между квартирами (кроме крайней внешней стены)
+                    if (side == "left" and k < n_side) or (side == "right" and k > 0):
+                        px = ax0 if side == "right" else ax0 + apt_width
+                        if 0.01 < px < length - 0.01 and abs(px - core_x0) > 0.01 and abs(px - (core_x0 + core_w)) > 0.01:
+                            apw = ifc.create_entity("IfcWall", g(), None, f"Межквартирная стена x={px:.1f} эт.{floor_i+1}")
+                            apw.ObjectPlacement = _make_placement(ifc, px, wt, wz, _d3(ifc, 0, 1, 0))
+                            apw.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                                [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, inner_w, 0.2, cx=inner_w/2, cy=0.1), floor_height)])])
+                            _assign_material(ifc, apw, "кирпич керамический")
+                            elems.append(apw)
+
+                    # генеративная внутренняя перегородка квартиры (зона мокрая/жилая)
+                    wet_depth = width * 0.32
+                    iw = ifc.create_entity("IfcWall", g(), None, f"Перегородка кв.{apt_idx} подъезд {sec_i+1} эт.{floor_i+1}")
+                    iw.ObjectPlacement = _make_placement(ifc, ax0 + apt_width * 0.5, wet_depth, wz)
+                    iw.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
+                        [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, apt_width - 0.3, 0.12), floor_height - 0.1)])])
+                    _assign_material(ifc, iw, "гипсокартон")
+                    elems.append(iw)
+
+                    # окна квартиры на фасаде
+                    if add_windows:
+                        n_win = max(1, round(apt_width / 3.0))
+                        for xp in _distribute_windows(apt_width, n_win, window_width, True):
+                            op_w, w_elem = _add_window_to_wall(ifc, ctx, wf, ax0 + xp, window_sill, window_width, window_height, wf.ObjectPlacement, wt)
+                            elems.extend([op_w, w_elem])
+                    apt_idx += 1
+
+        ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
+                          RelatedElements=elems, RelatingStructure=storey)
+
+    # ─── Крыша на весь корпус ────────────────────────────────────────────────
+    roof_elems = _build_roof(ifc, ctx, length, width, height, slab_thickness, wt, roof_type)
+    if last_storey and roof_elems:
+        ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
+                          RelatedElements=roof_elems, RelatingStructure=last_storey)
+
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    out = os.path.join(OUTPUT_DIR,
+        f"{name}_{entrances}sec_{apartments_per_landing}apt_{num_floors}f_{ts}.ifc")
+    os.makedirs(os.path.dirname(out), exist_ok=True)
+    ifc.write(out)
+
+    stats = {
+        "walls":     len(ifc.by_type("IfcWall")),
+        "slabs":     len(ifc.by_type("IfcSlab")),
+        "windows":   len(ifc.by_type("IfcWindow")),
+        "doors":     len(ifc.by_type("IfcDoor")),
+        "columns":   len(ifc.by_type("IfcColumn")),
+        "beams":     len(ifc.by_type("IfcBeam")),
+        "stairs":    len(ifc.by_type("IfcStairFlight")),
+        "elevators": len(ifc.by_type("IfcTransportElement")),
+        "openings":  len(ifc.by_type("IfcOpeningElement")),
+        "storeys":   len(ifc.by_type("IfcBuildingStorey")),
+        "entrances": entrances,
+        "apartments": entrances * apartments_per_landing * num_floors,
     }
     return out, stats
 

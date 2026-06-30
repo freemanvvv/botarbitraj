@@ -113,6 +113,9 @@ export default function ThreeViewer({ filename }: Props) {
           IfcStairFlight: 0xa78bfa,
           IfcFooting: 0x57534e,
           IfcRailing: 0x34d399,
+          IfcTransportElement: 0xf97316,
+          IfcFlowSegment: 0x06b6d4,
+          IfcBuildingElementProxy: 0xeab308,
         };
 
         const group = new THREE.Group();

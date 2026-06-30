@@ -717,8 +717,39 @@ def model_architect(req: ArchitectRequest):
         norm_violations = norm_violations + building_violations
 
         # ─── ШАГ 3: Генерация IFC ─────────────────────────────────────────────
-        from src.ifc_generator import create_max_building
-        path, stats = create_max_building(**building_params)
+        from src.ifc_generator import create_max_building, create_apartment_building
+        n_entrances = int(building_meta.get("entrances", 1) or 1)
+        n_apt = int(building_meta.get("apartments_per_landing", 1) or 1)
+        if n_entrances > 1 or n_apt > 1:
+            path, stats = create_apartment_building(
+                name=building_params["name"],
+                num_floors=building_params["num_floors"],
+                floor_height=building_params["height"] / building_params["num_floors"],
+                entrances=n_entrances,
+                apartments_per_landing=n_apt,
+                has_elevator=bool(building_meta.get("has_elevator", False)),
+                elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),
+                elevator_capacity_kg=float(building_meta.get("elevator_capacity_kg", 400) or 400),
+                elevator_shaft_m=str(building_meta.get("elevator_shaft_m", "1.8x1.8") or "1.8x1.8"),
+                stair_width_m=float(building_meta.get("stair_width_m", 1.2) or 1.2),
+                riser_shaft_m=str(building_meta.get("riser_shaft_m", "0.4x0.6") or "0.4x0.6"),
+                electrical_niche_m=str(building_meta.get("electrical_niche_m", "0.6x0.9x0.2") or "0.6x0.9x0.2"),
+                wall_thickness=building_params["wall_thickness"],
+                slab_thickness=building_params["slab_thickness"],
+                roof_type=building_params["roof_type"],
+                add_windows=building_params.get("add_windows", True),
+                add_doors=building_params.get("add_doors", True),
+                add_columns=building_params.get("add_columns", True),
+                add_beams=building_params.get("add_beams", True),
+                add_foundation=building_params.get("add_foundation", True),
+                window_width=building_params.get("window_width", 1.2),
+                window_height=building_params.get("window_height", 1.5),
+                window_sill=building_params.get("window_sill", 0.9),
+                door_width=building_params.get("door_width", 0.9),
+                door_height=building_params.get("door_height", 2.1),
+            )
+        else:
+            path, stats = create_max_building(**building_params)
 
         return {
             "ok": True,
