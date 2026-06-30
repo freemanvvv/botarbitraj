@@ -491,7 +491,7 @@ def create_max_building(
         # Фронтоны (торцевые треугольники) — как вертикальные плиты
         for fx, fdir in [(0, _d3(ifc, -1, 0, 0)), (length, _d3(ifc, 1, 0, 0))]:
             fp = ifc.create_entity("IfcSlab", g(), None, f"Фронтон {fx:.0f}")
-            fp.PredefinedType = "WALL"
+            fp.PredefinedType = "NOTDEFINED"
             fp.ObjectPlacement = _make_placement(ifc, fx, 0, roof_z,
                                                   x_axis=_d3(ifc, 0, 1, 0))
             fp_prof = _rect_profile(ifc, width, wt)
