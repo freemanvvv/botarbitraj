@@ -1,3 +1,4 @@
+requests>=2.31,<3.0
 openai>=1.0,<2.0
 chromadb>=1.5,<2.0
 llama-index>=0.14,<1.0
