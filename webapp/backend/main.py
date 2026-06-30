@@ -475,6 +475,136 @@ class BimGenerateRequest(BaseModel):
     description: str
 
 
+class ArchitectRequest(BaseModel):
+    requirements: str
+    model: str = "local-model"
+
+
+@app.post("/api/model/architect")
+def model_architect(req: ArchitectRequest):
+    """LLM как архитектор: принимает требования → проектирует здание → возвращает params + обоснование."""
+    import requests as req_lib
+    from src.config import LM_STUDIO_BASE_URL
+    import re
+
+    if not req.requirements.strip():
+        raise HTTPException(400, "requirements is required")
+
+    system_prompt = """Ты — опытный архитектор-проектировщик в Узбекистане.
+Клиент дал тебе требования к зданию. Твоя задача — самостоятельно принять все архитектурные решения:
+рассчитать площадь, определить пропорции, выбрать конструктивную систему, расставить окна и двери.
+
+Верни ТОЛЬКО валидный JSON (без markdown, без пояснений вне JSON):
+{
+  "name": "Название проекта",
+  "summary": "Краткое архитектурное решение в 1-2 предложениях",
+  "reasoning": {
+    "footprint": "Почему именно такие длина и ширина",
+    "floors": "Почему столько этажей и такая высота",
+    "facade": "Решение по окнам: количество, размер, расположение",
+    "structure": "Нужны ли колонны, балконы, тип крыши и почему",
+    "layout": "Краткая планировка: что где находится"
+  },
+  "params": {
+    "length": 15.0,
+    "width": 12.0,
+    "num_floors": 2,
+    "floor_height": 3.0,
+    "roof_type": "gable",
+    "windows_per_wall_long": 3,
+    "windows_per_wall_short": 2,
+    "window_width": 1.2,
+    "window_height": 1.5,
+    "window_sill": 0.9,
+    "door_width": 0.9,
+    "door_height": 2.1,
+    "add_columns": false,
+    "add_balconies": false,
+    "add_internal_walls": true,
+    "add_foundation": true,
+    "wall_thickness": 0.4
+  }
+}
+
+Архитектурные нормы которые нужно соблюдать:
+- Жилой дом: 18-25 м² на человека, высота этажа 2.7-3.0м
+- Офис: 8-12 м² на сотрудника, высота этажа 3.0-3.6м
+- Торговый: 5-8 м² на посетителя, высота этажа 3.5-5м
+- Соотношение окон к стене: 15-30% площади фасада
+- Колонны нужны при пролёте > 6м или > 4 этажей
+- Балконы — жилые дома от 2 этажа, офисы обычно без"""
+
+    try:
+        resp = req_lib.post(
+            f"{LM_STUDIO_BASE_URL}/chat/completions",
+            json={
+                "model": req.model,
+                "messages": [
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": f"Требования заказчика:\n{req.requirements}"},
+                ],
+                "temperature": 0.3,
+                "max_tokens": 1200,
+            },
+            timeout=90,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+
+        # Извлечь JSON
+        json_match = re.search(r'\{[\s\S]*\}', raw)
+        if not json_match:
+            raise ValueError("LLM не вернул JSON")
+        data = json.loads(json_match.group())
+
+        p = data.get("params", {})
+        floor_h = float(p.get("floor_height", 3.0))
+        n_floors = int(p.get("num_floors", 2))
+
+        building_params = {
+            "name": data.get("name", "Building"),
+            "length": float(p.get("length", 15.0)),
+            "width": float(p.get("width", 12.0)),
+            "height": floor_h * n_floors,
+            "num_floors": n_floors,
+            "wall_thickness": float(p.get("wall_thickness", 0.4)),
+            "slab_thickness": 0.2,
+            "roof_type": p.get("roof_type", "gable"),
+            "add_internal_walls": bool(p.get("add_internal_walls", True)),
+            "add_windows": True,
+            "add_doors": True,
+            "add_columns": bool(p.get("add_columns", False)),
+            "add_balconies": bool(p.get("add_balconies", False)),
+            "add_foundation": bool(p.get("add_foundation", True)),
+            "windows_per_wall_long": int(p.get("windows_per_wall_long", 3)),
+            "windows_per_wall_short": int(p.get("windows_per_wall_short", 2)),
+            "window_width": float(p.get("window_width", 1.2)),
+            "window_height": float(p.get("window_height", 1.5)),
+            "window_sill": float(p.get("window_sill", 0.9)),
+            "door_width": float(p.get("door_width", 0.9)),
+            "door_height": float(p.get("door_height", 2.1)),
+        }
+
+        # Сразу генерируем IFC
+        from src.ifc_generator import create_max_building
+        path, stats = create_max_building(**building_params)
+
+        return {
+            "ok": True,
+            "name": data.get("name", "Building"),
+            "summary": data.get("summary", ""),
+            "reasoning": data.get("reasoning", {}),
+            "params": building_params,
+            "stats": stats,
+            "filename": os.path.basename(path),
+            "download_url": f"/api/model/download/{os.path.basename(path)}",
+        }
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(500, str(e))
+
+
 @app.post("/api/model/bim-generate")
 def model_bim_generate(req: BimGenerateRequest):
     """BIM-пайплайн: текст → IFC (по ТЗ)."""

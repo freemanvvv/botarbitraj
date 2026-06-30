@@ -26,7 +26,11 @@ const DEFAULT_PARAMS = {
   door_width: 0.9, door_height: 2.1,
 };
 
-type Tab = "create" | "plan" | "nl" | "view";
+type Tab = "create" | "plan" | "nl" | "arch" | "view";
+
+interface ArchReasoning {
+  footprint: string; floors: string; facade: string; structure: string; layout: string;
+}
 
 export default function Modeling() {
   const [params, setParams] = useState({ ...DEFAULT_PARAMS });
@@ -34,6 +38,7 @@ export default function Modeling() {
   const [loading, setLoading] = useState(false);
   const [nlLoading, setNlLoading] = useState(false);
   const [imgLoading, setImgLoading] = useState(false);
+  const [archLoading, setArchLoading] = useState(false);
   const [files, setFiles] = useState<IFCFile[]>([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [tab, setTab] = useState<Tab>("create");
@@ -42,6 +47,11 @@ export default function Modeling() {
   const [planDesc, setPlanDesc] = useState("");
   const [analysisNotes, setAnalysisNotes] = useState("");
   const [analysisError, setAnalysisError] = useState("");
+  const [archReq, setArchReq] = useState("");
+  const [archName, setArchName] = useState("");
+  const [archSummary, setArchSummary] = useState("");
+  const [archReasoning, setArchReasoning] = useState<ArchReasoning | null>(null);
+  const [archError, setArchError] = useState("");
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -129,6 +139,31 @@ export default function Modeling() {
     finally { setNlLoading(false); }
   };
 
+  const designWithAI = async () => {
+    if (!archReq.trim()) return;
+    setArchLoading(true);
+    setArchError("");
+    setArchReasoning(null);
+    setArchName(""); setArchSummary("");
+    try {
+      const res = await fetch(`${API}/api/model/architect`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ requirements: archReq }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || "Ошибка архитектора");
+      setArchName(d.name || "");
+      setArchSummary(d.summary || "");
+      setArchReasoning(d.reasoning || null);
+      setStats(d.stats);
+      setSelectedFile(d.filename);
+      setParams(prev => ({ ...prev, ...d.params }));
+      await refreshFiles();
+    } catch (e: any) { setArchError(e.message); }
+    finally { setArchLoading(false); }
+  };
+
   const fmt = (ts: number) => new Date(ts * 1000).toLocaleString().slice(0, -3);
 
   const Label = ({ children }: { children: React.ReactNode }) => (
@@ -158,6 +193,7 @@ export default function Modeling() {
         <h2>Моделирование</h2>
         <div className="toggle-group">
           {([
+            ["arch",   "🏛 Архитектор"],
             ["create", "Параметры"],
             ["plan",   "📐 По плану"],
             ["nl",     "🤖 По описанию"],
@@ -171,6 +207,69 @@ export default function Modeling() {
       <div className="modeling-grid" style={{ flex: 1 }}>
         {/* ─── Left panel ─── */}
         <div className="modeling-params">
+
+          {/* ══ AI АРХИТЕКТОР ══ */}
+          {tab === "arch" && (<>
+            <h3 style={{ marginBottom: 6, color: "var(--accent)" }}>🏛 AI Архитектор</h3>
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 14, lineHeight: 1.6 }}>
+              Опиши требования к зданию — LLM самостоятельно спроектирует его: рассчитает площади, расставит окна, выберет конструкцию.
+            </p>
+
+            <textarea
+              value={archReq}
+              onChange={e => setArchReq(e.target.value)}
+              placeholder={"Примеры:\n• Жилой дом на семью из 4 человек, участок 10×15м, 2 этажа, 3 спальни\n• Офис на 20 сотрудников, представительский вход, переговорная\n• Торговый павильон 100м², одноэтажный, большие витрины"}
+              style={{ width: "100%", height: 120, padding: 10, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", resize: "vertical", fontSize: "0.83rem", fontFamily: "inherit", lineHeight: 1.6 }}
+            />
+
+            {archError && (
+              <div style={{ padding: "8px 12px", background: "rgba(255,69,58,0.1)", border: "1px solid rgba(255,69,58,0.25)", borderRadius: 8, fontSize: "0.78rem", color: "var(--danger)", margin: "10px 0" }}>
+                ❌ {archError}
+              </div>
+            )}
+
+            <button className="btn-gen" onClick={designWithAI} disabled={archLoading || !archReq.trim()} style={{ marginTop: 10 }}>
+              {archLoading ? "⏳ Архитектор проектирует..." : "🏛 Разработать проект"}
+            </button>
+
+            {archLoading && (
+              <div style={{ marginTop: 12, padding: "10px 14px", background: "var(--bg2)", borderRadius: 8, fontSize: "0.78rem", color: "var(--text2)", lineHeight: 1.7 }}>
+                LLM рассчитывает площади, подбирает пропорции и генерирует IFC...
+              </div>
+            )}
+
+            {archReasoning && (<>
+              <div style={{ marginTop: 16, padding: "12px 14px", background: "rgba(10,132,255,0.08)", border: "1px solid rgba(10,132,255,0.2)", borderRadius: 10 }}>
+                <div style={{ fontWeight: 600, fontSize: "0.92rem", color: "var(--text)", marginBottom: 4 }}>{archName}</div>
+                <div style={{ fontSize: "0.8rem", color: "var(--text2)", lineHeight: 1.6 }}>{archSummary}</div>
+              </div>
+
+              {([
+                ["📐 Габариты", archReasoning.footprint],
+                ["🏢 Этажность", archReasoning.floors],
+                ["🪟 Фасад", archReasoning.facade],
+                ["🏗 Конструкция", archReasoning.structure],
+                ["🗺 Планировка", archReasoning.layout],
+              ] as [string, string][]).map(([label, text]) => text ? (
+                <div key={label} style={{ marginTop: 8, padding: "9px 12px", background: "var(--bg2)", borderRadius: 8, border: "1px solid var(--border)" }}>
+                  <div style={{ fontSize: "0.7rem", fontWeight: 600, color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>{label}</div>
+                  <div style={{ fontSize: "0.8rem", color: "var(--text)", lineHeight: 1.6 }}>{text}</div>
+                </div>
+              ) : null)}
+
+              <button className="btn-gen" onClick={() => setTab("view")} style={{ marginTop: 12, background: "var(--bg3)", color: "var(--text)" }}>
+                Открыть 3D модель →
+              </button>
+            </>)}
+
+            <div style={{ marginTop: 14, padding: "10px 12px", background: "var(--bg2)", borderRadius: 8, fontSize: "0.73rem", color: "var(--text2)", lineHeight: 1.7 }}>
+              <strong style={{ color: "var(--text3)" }}>Как работает:</strong><br />
+              1. LLM получает требования и применяет строительные нормы Узбекистана<br />
+              2. Самостоятельно рассчитывает размеры, этажность и элементы фасада<br />
+              3. Объясняет каждое архитектурное решение<br />
+              4. Сразу генерирует IFC-модель
+            </div>
+          </>)}
 
           {/* ══ ПАРАМЕТРЫ ══ */}
           {tab === "create" && (<>
@@ -347,7 +446,7 @@ export default function Modeling() {
 
         {/* ─── Right: 3D viewer ─── */}
         <div className="modeling-viewer">
-          {selectedFile && (tab === "view" || tab === "create" || tab === "nl") ? (
+          {selectedFile && (tab === "view" || tab === "create" || tab === "nl" || tab === "arch") ? (
             <ThreeViewer filename={selectedFile} />
           ) : (
             <div className="viewer-placeholder">
@@ -355,6 +454,8 @@ export default function Modeling() {
               <div style={{ textAlign: "center", maxWidth: 300, lineHeight: 1.7 }}>
                 {tab === "plan"
                   ? "Загрузи план — LLM извлечёт параметры, затем сгенерируй IFC"
+                  : tab === "arch"
+                  ? "Опиши требования — AI спроектирует здание и покажет его здесь"
                   : "Задай параметры и нажми «Сгенерировать»"
                 }
               </div>
