@@ -313,6 +313,7 @@ class BuildingParams(BaseModel):
     width: float = 12.0
     height: float = 7.0
     num_floors: int = 2
+    floor_height: float | None = None
     wall_thickness: float = 0.4
     slab_thickness: float = 0.2
     roof_type: str = "gable"
@@ -320,6 +321,8 @@ class BuildingParams(BaseModel):
     add_windows: bool = True
     add_doors: bool = True
     add_columns: bool = True
+    add_beams: bool = True
+    add_stairs: bool = True
     add_balconies: bool = False
     add_foundation: bool = True
     windows_per_wall_long: int = 3
@@ -342,6 +345,7 @@ def model_generate(params: BuildingParams):
             width=params.width,
             height=params.height,
             num_floors=params.num_floors,
+            floor_height=params.floor_height,
             wall_thickness=params.wall_thickness,
             slab_thickness=params.slab_thickness,
             roof_type=params.roof_type,
@@ -349,6 +353,8 @@ def model_generate(params: BuildingParams):
             add_windows=params.add_windows,
             add_doors=params.add_doors,
             add_columns=params.add_columns,
+            add_beams=params.add_beams,
+            add_stairs=params.add_stairs,
             add_balconies=params.add_balconies,
             add_foundation=params.add_foundation,
             windows_per_wall_long=params.windows_per_wall_long,
@@ -649,6 +655,8 @@ def model_architect(req: ArchitectRequest):
             "add_windows": True,
             "add_doors": True,
             "add_columns": bool(p.get("add_columns", False)),
+            "add_beams": True,
+            "add_stairs": bool(n_floors > 1),
             "add_balconies": bool(p.get("add_balconies", False)),
             "add_foundation": bool(p.get("add_foundation", True)),
             "windows_per_wall_long": int(p.get("windows_per_wall_long", 3)),
@@ -659,6 +667,11 @@ def model_architect(req: ArchitectRequest):
             "door_width": float(p.get("door_width", 0.9)),
             "door_height": float(p.get("door_height", 2.1)),
         }
+
+        # ─── ШАГ 2.5: Детерминированная проверка норм (не доверяем LLM на слово) ──
+        from src.normbase.validator import validate_and_fix_params
+        building_type_str = data.get("building_type", "")
+        building_params, norm_violations = validate_and_fix_params(building_params, building_type_str)
 
         # ─── ШАГ 3: Генерация IFC ─────────────────────────────────────────────
         from src.ifc_generator import create_max_building
@@ -673,6 +686,7 @@ def model_architect(req: ArchitectRequest):
             "plan": data.get("plan", {}),
             "reasoning": data.get("reasoning", {}),
             "params": building_params,
+            "norm_violations_fixed": norm_violations,
             "stats": stats,
             "filename": os.path.basename(path),
             "download_url": f"/api/model/download/{os.path.basename(path)}",
@@ -804,6 +818,11 @@ def model_view(filename: str):
             "IfcSlab": "IfcSlab",
             "IfcWindow": "IfcWindow",
             "IfcDoor": "IfcDoor",
+            "IfcColumn": "IfcColumn",
+            "IfcBeam": "IfcBeam",
+            "IfcStairFlight": "IfcStairFlight",
+            "IfcFooting": "IfcFooting",
+            "IfcRailing": "IfcRailing",
         }
 
         for ifc_type, display_type in DISPLAY_TYPES.items():

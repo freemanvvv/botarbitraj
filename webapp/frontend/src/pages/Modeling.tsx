@@ -62,6 +62,7 @@ export default function Modeling() {
   const [archSummary, setArchSummary] = useState("");
   const [archNormStudy, setArchNormStudy] = useState("");
   const [archPlan, setArchPlan] = useState<ArchPlan | null>(null);
+  const [archViolations, setArchViolations] = useState<string[]>([]);
   const [archReasoning, setArchReasoning] = useState<ArchReasoning | null>(null);
   const [archStep, setArchStep] = useState<"idle"|"norms"|"planning"|"generating"|"done">("idle");
   const [archError, setArchError] = useState("");
@@ -159,6 +160,7 @@ export default function Modeling() {
     setArchReasoning(null);
     setArchPlan(null);
     setArchNormStudy("");
+    setArchViolations([]);
     setArchName(""); setArchSummary("");
     setArchStep("norms");
     try {
@@ -179,6 +181,7 @@ export default function Modeling() {
       setArchNormStudy(d.norm_study || "");
       setArchPlan(d.plan || null);
       setArchReasoning(d.reasoning || null);
+      setArchViolations(d.norm_violations_fixed || []);
       setStats(d.stats);
       setSelectedFile(d.filename);
       setParams(prev => ({ ...prev, ...d.params }));
@@ -293,6 +296,18 @@ export default function Modeling() {
                 <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(48,209,88,0.08)", border: "1px solid rgba(48,209,88,0.2)", borderRadius: 8 }}>
                   <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "#30d158", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 3 }}>📚 Применённые нормы</div>
                   <div style={{ fontSize: "0.77rem", color: "var(--text)", lineHeight: 1.6 }}>{archNormStudy}</div>
+                </div>
+              )}
+
+              {/* Автоматические исправления — нормы, которые LLM не учла */}
+              {archViolations.length > 0 && (
+                <div style={{ marginTop: 8, padding: "8px 12px", background: "rgba(255,159,10,0.08)", border: "1px solid rgba(255,159,10,0.25)", borderRadius: 8 }}>
+                  <div style={{ fontSize: "0.68rem", fontWeight: 600, color: "#ff9f0a", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 4 }}>
+                    ⚠️ Автокоррекция по нормам ({archViolations.length})
+                  </div>
+                  <ul style={{ margin: 0, paddingLeft: 16, fontSize: "0.75rem", color: "var(--text)", lineHeight: 1.7 }}>
+                    {archViolations.map((v, i) => <li key={i}>{v}</li>)}
+                  </ul>
                 </div>
               )}
 
