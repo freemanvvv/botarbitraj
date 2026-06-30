@@ -2,14 +2,16 @@ import { useState } from "react";
 import Archive from "./pages/Archive";
 import ChatTab from "./pages/ChatTab";
 import Modeling from "./pages/Modeling";
+import GsplatTab from "./pages/GsplatTab";
 import "./App.css";
 
-type Tab = "archive" | "chat" | "modeling";
+type Tab = "archive" | "chat" | "modeling" | "gsplat";
 
 const TABS: { key: Tab; label: string; icon: string }[] = [
   { key: "archive", label: "Архив", icon: "📚" },
   { key: "chat", label: "Чат с ботом", icon: "💬" },
   { key: "modeling", label: "Моделирование", icon: "🏗️" },
+  { key: "gsplat", label: "3D-карты", icon: "🗺️" },
 ];
 
 export default function App() {
@@ -36,6 +38,7 @@ export default function App() {
         {activeTab === "archive" && <Archive />}
         {activeTab === "chat" && <ChatTab />}
         {activeTab === "modeling" && <Modeling />}
+        {activeTab === "gsplat" && <GsplatTab />}
       </main>
     </div>
   );
