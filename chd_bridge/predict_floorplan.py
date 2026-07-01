@@ -66,6 +66,7 @@ import os
 import sys
 
 import numpy as np
+import numpy as np
 from PIL import Image
 
 # Классы их таксономии (room_label, image_process.py), для читаемости.
@@ -200,14 +201,18 @@ def _make_llm_client():
     model = os.environ.get("CHD_LLM_MODEL")
 
     if not base_url or not api_key:
-        try:
-            with open("api_info.json", encoding="utf-8") as f:
-                info = json.load(f)
-            base_url = base_url or info.get("base_url")
-            api_key = api_key or info.get("api_key")
-            model = model or info.get("model")
-        except (OSError, json.JSONDecodeError):
-            pass
+        # Try CWD first, then script directory
+        info = {}
+        for _p in ["api_info.json", os.path.join(os.path.dirname(os.path.abspath(__file__)), "api_info.json")]:
+            try:
+                with open(_p, encoding="utf-8") as f:
+                    info = json.load(f)
+                    break
+            except (OSError, json.JSONDecodeError):
+                continue
+        base_url = base_url or info.get("base_url")
+        api_key = api_key or info.get("api_key")
+        model = model or info.get("model")
 
     client = OpenAI(api_key=api_key or "not-needed", base_url=base_url)
     return client, (model or "llama3:instruct")
@@ -343,9 +348,39 @@ def main() -> int:
     if debug_dir:
         np.save(os.path.join(debug_dir, "label_grid.npy"), class_grid)
 
+    # Vectorize rooms inline (cv2 available in CHD venv)
+    try:
+        import cv2
+        _grid_np = np.asarray(class_grid, dtype=np.uint8)
+        _rooms_list = []
+        _class_to_type = {0:"living",1:"bedroom",2:"kitchen",3:"bathroom",4:"dining",
+                          5:"bedroom",6:"bedroom",7:"bedroom",8:"bedroom",9:"balcony",
+                          10:"hallway",11:"storage",12:"wall",15:"door"}
+        for _cid, _ctype in _class_to_type.items():
+            _mask = (_grid_np == _cid).astype(np.uint8)
+            if _mask.sum() < 10: continue
+            _num, _comps = cv2.connectedComponents(_mask, connectivity=4)
+            for _comp in range(1, _num):
+                _cmask = (_comps == _comp).astype(np.uint8)
+                if _cmask.sum() < 10: continue
+                _contours, _ = cv2.findContours(_cmask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+                if not _contours: continue
+                _cnt = max(_contours, key=cv2.contourArea)
+                _approx = cv2.approxPolyDP(_cnt, 0.5, closed=True)
+                _xs = [p[0][0] / px_per_meter for p in _approx]
+                _ys = [p[0][1] / px_per_meter for p in _approx]
+                _rooms_list.append({"type":_ctype,"x0":round(min(_xs),3),"y0":round(min(_ys),3),
+                                    "x1":round(max(_xs),3),"y1":round(max(_ys),3),
+                                    "area":round(abs(max(_xs)-min(_xs))*abs(max(_ys)-min(_ys)),2)})
+        _log(f"Vectorized {len(_rooms_list)} rooms from bridge")
+    except Exception as e:
+        _log(f"bridge vectorize: {e}")
+        _rooms_list = []
+
     print(json.dumps({
         "label_grid": class_grid.astype(int).tolist(),
         "px_per_meter": px_per_meter,
+        "rooms": _rooms_list,
     }))
     return 0
 
