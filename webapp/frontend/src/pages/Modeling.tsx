@@ -96,6 +96,7 @@ export default function Modeling() {
   const [archModels, setArchModels] = useState<string[]>(["local-model"]);
   const [archModel, setArchModel] = useState("local-model");
   const [archIntegrity, setArchIntegrity] = useState<IntegrityResult | null>(null);
+  const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural">("solver");
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -205,7 +206,7 @@ export default function Modeling() {
       const res = await fetch(`${API}/api/model/architect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requirements: archReq, model: archModel }),
+        body: JSON.stringify({ requirements: archReq, model: archModel, floorplan_mode: archFloorplanMode }),
       });
       clearTimeout(stepTimer); clearTimeout(stepTimer2);
       const d = await res.json();
@@ -288,6 +289,24 @@ export default function Modeling() {
             >
               {archModels.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
+
+            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: "0.8rem", color: "var(--text)", cursor: archLoading ? "default" : "pointer" }}>
+              <input
+                type="checkbox"
+                checked={archFloorplanMode === "neural"}
+                onChange={e => setArchFloorplanMode(e.target.checked ? "neural" : "solver")}
+                disabled={archLoading}
+                style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
+              />
+              🧠 ИИ-планировка квартир (экспериментально)
+            </label>
+            {archFloorplanMode === "neural" && (
+              <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginTop: -4, marginBottom: 10, lineHeight: 1.5 }}>
+                Планировку комнат внутри квартир расставит выбранная выше локальная модель.
+                Каждый вариант проверяется по нормам КМК; если модель ошиблась или недоступна —
+                автоматический откат на детерминированный генератор.
+              </p>
+            )}
 
             <textarea
               value={archReq}

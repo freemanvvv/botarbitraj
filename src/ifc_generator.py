@@ -714,6 +714,8 @@ def create_apartment_building(
     apt_width: float = 8.5,
     apt_depth: float = 11.0,
     apartment_rooms: int = 2,
+    floorplan_mode: str = "solver",
+    llm_model: str = "local-model",
     has_elevator: bool = True,
     elevators_per_entrance: int = 1,
     elevator_capacity_kg: float = 400,
@@ -809,15 +811,36 @@ def create_apartment_building(
     # Стена-разделитель шахта/лестница внутри core (КМК 2.08.01-89 п.6.7)
     stair_run_d = 0.28 * max(8, round(floor_height / 0.175))
 
-    # ── Генеративная планировка квартиры (Путь C, фазы 0-2) ─────────────────
+    # ── Генеративная планировка квартиры (Путь C, фазы 0-2, 4) ──────────────
     # Одна и та же планировка переиспользуется для всех этажей/секций —
     # квартиры одного типа (side) одинаковы; строится один раз, проверяется
     # по нормам один раз, а IFC-элементы штампуются per-инстанс в floorplan_to_ifc.
+    #
+    # floorplan_mode="neural": планировку сначала пытается сгенерировать
+    # локальная LLM (LM Studio, см. src/floorplan/neural.py) — та же
+    # RAG-проверка по нормам решает, принять её или откатиться на
+    # детерминированный солвер. Если LLM недоступна/вернула мусор — тихий
+    # и безопасный fallback на generate_floorplan(), здание всегда соберётся.
     apt_inner_depth = max(1.0, width - 2 * wt)
-    fp_west = generate_floorplan(width=apt_width, depth=apt_inner_depth,
-                                  room_count=apartment_rooms, entry_side="west")
-    fp_east = generate_floorplan(width=apt_width, depth=apt_inner_depth,
-                                  room_count=apartment_rooms, entry_side="east")
+    floorplan_sources = {}
+    if floorplan_mode == "neural":
+        from .floorplan import generate_floorplan_llm
+        fp_west = generate_floorplan_llm(width=apt_width, depth=apt_inner_depth,
+                                          room_count=apartment_rooms, entry_side="west",
+                                          model=llm_model) or \
+            generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                room_count=apartment_rooms, entry_side="west")
+        fp_east = generate_floorplan_llm(width=apt_width, depth=apt_inner_depth,
+                                          room_count=apartment_rooms, entry_side="east",
+                                          model=llm_model) or \
+            generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                room_count=apartment_rooms, entry_side="east")
+    else:
+        fp_west = generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                      room_count=apartment_rooms, entry_side="west")
+        fp_east = generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                      room_count=apartment_rooms, entry_side="east")
+    floorplan_sources = {"west": fp_west.source, "east": fp_east.source}
     floorplan_issues = validate_floorplan(fp_west) + validate_floorplan(fp_east)
 
     last_storey = None
@@ -1114,6 +1137,7 @@ def create_apartment_building(
         "apartments": entrances * apartments_per_landing * num_floors,
         "spaces":    len(ifc.by_type("IfcSpace")),
         "floorplan_issues": floorplan_issues,
+        "floorplan_sources": floorplan_sources,
     }
     return out, stats
 
