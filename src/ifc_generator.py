@@ -22,6 +22,9 @@ try:
 except ImportError:
     IFC_AVAILABLE = False
 
+from .floorplan import generate_floorplan, floorplan_to_ifc, validate_floorplan
+from .floorplan.ir import WINDOW_REQUIRED_TYPES
+
 
 # ─── helpers ───────────────────────────────────────────────────────────────────
 
@@ -708,8 +711,9 @@ def create_apartment_building(
     floor_height: float = 3.0,
     entrances: int = 1,
     apartments_per_landing: int = 2,
-    apt_width: float = 6.5,
+    apt_width: float = 8.5,
     apt_depth: float = 11.0,
+    apartment_rooms: int = 2,
     has_elevator: bool = True,
     elevators_per_entrance: int = 1,
     elevator_capacity_kg: float = 400,
@@ -805,6 +809,17 @@ def create_apartment_building(
     # Стена-разделитель шахта/лестница внутри core (КМК 2.08.01-89 п.6.7)
     stair_run_d = 0.28 * max(8, round(floor_height / 0.175))
 
+    # ── Генеративная планировка квартиры (Путь C, фазы 0-2) ─────────────────
+    # Одна и та же планировка переиспользуется для всех этажей/секций —
+    # квартиры одного типа (side) одинаковы; строится один раз, проверяется
+    # по нормам один раз, а IFC-элементы штампуются per-инстанс в floorplan_to_ifc.
+    apt_inner_depth = max(1.0, width - 2 * wt)
+    fp_west = generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                  room_count=apartment_rooms, entry_side="west")
+    fp_east = generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                  room_count=apartment_rooms, entry_side="east")
+    floorplan_issues = validate_floorplan(fp_west) + validate_floorplan(fp_east)
+
     last_storey = None
     for floor_i in range(num_floors):
         z0 = floor_i * floor_height
@@ -897,6 +912,7 @@ def create_apartment_building(
             n_right = apartments_per_landing - n_left
 
             # Стены, отделяющие core от квартир и подъезд от подъезда
+            core_walls_by_x = {}
             party_xs = [sx0] if sec_i > 0 else []
             for px in [core_x0, core_x0 + core_w] + party_xs:
                 if px <= 0.01 or px >= length - 0.01:
@@ -907,6 +923,7 @@ def create_apartment_building(
                     [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, inner_w, wt * 0.5, cx=inner_w/2, cy=wt*0.25), floor_height)])])
                 _assign_material(ifc, pw, "кирпич керамический")
                 elems.append(pw)
+                core_walls_by_x[round(px, 3)] = pw
 
             # Входная дверь в подъезд (1-й этаж, по центру фасада core)
             if add_doors and floor_i == 0:
@@ -1010,7 +1027,9 @@ def create_apartment_building(
                     else:
                         ax0 = core_x0 + core_w + k * apt_width
 
-                    # перегородка между квартирами (кроме крайней внешней стены)
+                    # перегородка между квартирами (кроме крайней внешней стены,
+                    # которая уже построена отдельно как core-стена pw)
+                    apw = None
                     if (side == "left" and k < n_side) or (side == "right" and k > 0):
                         px = ax0 if side == "right" else ax0 + apt_width
                         if 0.01 < px < length - 0.01 and abs(px - core_x0) > 0.01 and abs(px - (core_x0 + core_w)) > 0.01:
@@ -1021,21 +1040,48 @@ def create_apartment_building(
                             _assign_material(ifc, apw, "кирпич керамический")
                             elems.append(apw)
 
-                    # генеративная внутренняя перегородка квартиры (зона мокрая/жилая)
-                    wet_depth = width * 0.32
-                    iw = ifc.create_entity("IfcWall", g(), None, f"Перегородка кв.{apt_idx} подъезд {sec_i+1} эт.{floor_i+1}")
-                    iw.ObjectPlacement = _make_placement(ifc, ax0 + apt_width * 0.5, wet_depth, wz)
-                    iw.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
-                        [_shape_rep(ifc, ctx, [_extrude(ifc, _rect_profile(ifc, apt_width - 0.3, 0.12), floor_height - 0.1)])])
-                    _assign_material(ifc, iw, "гипсокартон")
-                    elems.append(iw)
+                    # ── Генеративная планировка квартиры (Путь C, фазы 0-2) ──────
+                    # Готовый ApartmentFloorplan (общий для всех квартир этой
+                    # стороны здания) размещается по месту: внутренние
+                    # перегородки/двери/IfcSpace строит floorplan_to_ifc().
+                    entry_side = "east" if side == "left" else "west"
+                    px_entry = ax0 + apt_width if side == "left" else ax0
+                    entry_wall = core_walls_by_x.get(round(px_entry, 3)) or apw
 
-                    # окна квартиры на фасаде
+                    fp = fp_east if entry_side == "east" else fp_west
+                    apt_elems = floorplan_to_ifc(
+                        ifc, ctx, fp, ox=ax0, oy=wt, wz=wz,
+                        floor_height=floor_height, door_height=door_height,
+                        name_prefix=f"Кв.{apt_idx} п{sec_i+1} эт{floor_i+1}: ",
+                    )
+                    elems.extend(apt_elems)
+
+                    # Входная дверь квартиры — пробивается в уже построенной
+                    # core/межквартирной стене со стороны площадки (entry_side).
+                    if add_doors and entry_wall is not None:
+                        entry_door = next((d for d in fp.doors if d.kind == "entry"), None)
+                        if entry_door is not None:
+                            op_d, d_elem = _add_door_to_wall(
+                                ifc, ctx, entry_wall, entry_door.y, entry_door.width, door_height,
+                                entry_wall.ObjectPlacement, wt, f"Вход в кв.{apt_idx} эт.{floor_i+1}",
+                            )
+                            elems.extend([op_d, d_elem])
+
+                    # окна квартиры — по фасадным комнатам плана, а не равномерно
+                    # по всей ширине (окно там, где реально жилая комната/кухня)
                     if add_windows:
-                        n_win = max(1, round(apt_width / 3.0))
-                        for xp in _distribute_windows(apt_width, n_win, window_width, True):
-                            op_w, w_elem = _add_window_to_wall(ifc, ctx, wf, ax0 + xp, window_sill, window_width, window_height, wf.ObjectPlacement, wt)
-                            elems.extend([op_w, w_elem])
+                        for room in fp.rooms:
+                            if room.type not in WINDOW_REQUIRED_TYPES:
+                                continue
+                            if not room.touches_facade(fp.depth):
+                                continue
+                            n_win = max(1, round(room.width / 3.0))
+                            for xp in _distribute_windows(room.width, n_win, window_width, True):
+                                op_w, w_elem = _add_window_to_wall(
+                                    ifc, ctx, wf, ax0 + room.x0 + xp, window_sill, window_width,
+                                    window_height, wf.ObjectPlacement, wt,
+                                )
+                                elems.extend([op_w, w_elem])
                     apt_idx += 1
 
         ifc.create_entity("IfcRelContainedInSpatialStructure", g(), None, None,
@@ -1066,6 +1112,8 @@ def create_apartment_building(
         "storeys":   len(ifc.by_type("IfcBuildingStorey")),
         "entrances": entrances,
         "apartments": entrances * apartments_per_landing * num_floors,
+        "spaces":    len(ifc.by_type("IfcSpace")),
+        "floorplan_issues": floorplan_issues,
     }
     return out, stats
 

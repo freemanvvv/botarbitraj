@@ -598,6 +598,7 @@ def model_architect(req: ArchitectRequest):
   "building": {{
     "entrances": 1,
     "apartments_per_landing": 1,
+    "apartment_rooms": 2,
     "has_elevator": false,
     "elevators_per_entrance": 0,
     "elevator_capacity_kg": 400,
@@ -727,6 +728,7 @@ def model_architect(req: ArchitectRequest):
                 floor_height=building_params["height"] / building_params["num_floors"],
                 entrances=n_entrances,
                 apartments_per_landing=n_apt,
+                apartment_rooms=int(building_meta.get("apartment_rooms", 2) or 2),
                 has_elevator=bool(building_meta.get("has_elevator", False)),
                 elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),
                 elevator_capacity_kg=float(building_meta.get("elevator_capacity_kg", 400) or 400),
@@ -754,6 +756,18 @@ def model_architect(req: ArchitectRequest):
         # ─── ШАГ 4: Проверка целостности IFC ─────────────────────────────────
         from src.integrity_checker import validate_model_integrity
         integrity = validate_model_integrity(path)
+
+        # Нарушения норм планировки квартир (Путь C, фазы 0-2) — тот же формат
+        # issues, что и integrity_checker; объединяем в одну панель для UI.
+        fp_issues = stats.pop("floorplan_issues", [])
+        if fp_issues:
+            integrity["issues"] = fp_issues + integrity["issues"]
+            errors = sum(1 for i in integrity["issues"] if i["severity"] == "error")
+            warnings = sum(1 for i in integrity["issues"] if i["severity"] == "warning")
+            integrity["ok"] = errors == 0
+            integrity["summary"] = f"{errors} ошибок, {warnings} предупреждений"
+            integrity["counts"]["errors"] = errors
+            integrity["counts"]["warnings"] = warnings
 
         return {
             "ok": True,
@@ -904,6 +918,9 @@ def model_view(filename: str):
             "IfcStairFlight": "IfcStairFlight",
             "IfcFooting": "IfcFooting",
             "IfcRailing": "IfcRailing",
+            "IfcTransportElement": "IfcTransportElement",
+            "IfcFlowSegment": "IfcFlowSegment",
+            "IfcBuildingElementProxy": "IfcBuildingElementProxy",
         }
 
         for ifc_type, display_type in DISPLAY_TYPES.items():
