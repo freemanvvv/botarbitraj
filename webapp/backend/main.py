@@ -795,6 +795,96 @@ def model_architect(req: ArchitectRequest):
         raise HTTPException(500, str(e))
 
 
+# ─── MEP-раскладки (электрика, трубы, слаботочка) ─────────────────────────
+class MepRequest(BaseModel):
+    filename: str
+    model: str = "local-model"
+    systems: list[str] = ["electrical", "plumbing", "low_current"]
+    building_type: str = "row"
+
+
+@app.post("/api/model/mep-generate")
+def model_mep_generate(req: MepRequest):
+    """
+    Генерирует MEP-раскладку для готового IFC-файла.
+    Использует координаты комнат из floorplan-кэша (если есть)
+    или генерирует новую планировку через generate_floorplan_llm.
+    """
+    from src.floorplan import (
+        generate_floorplan_llm,
+        generate_floorplan,
+        generate_mep_layout,
+        MepLayout,
+    )
+
+    # Пробуем найти кэшированную планировку. Если нет — генерируем базовую
+    # (для демо, если IFC был создан через ручные параметры без floorplan)
+    import os
+    filepath = (OUTPUT_DIR / req.filename).resolve()
+    if not filepath.is_relative_to(OUTPUT_DIR.resolve()) or not filepath.exists():
+        raise HTTPException(404, "IFC-файл не найден")
+
+    # Пытаемся получить габариты из IFC (хотя бы примерные)
+    width = 15.0
+    depth = 9.0
+    room_count = 2
+    try:
+        import ifcopenshell
+        ifc = ifcopenshell.open(str(filepath))
+        # Пытаемся найти размеры из IFC
+        for storey in ifc.by_type("IfcBuildingStorey")[:1]:
+            for rel in ifc.get_inverse(storey):
+                if rel.is_a("IfcRelContainedInSpatialStructure"):
+                    for el in rel.RelatedElements:
+                        if el.is_a("IfcSlab"):
+                            try:
+                                rep = el.Representation.Representations[0]
+                                poly = rep.Items[0]
+                                if poly.is_a("IfcPolyline"):
+                                    pts = [(p.Coordinates[0], p.Coordinates[1]) for p in poly.Points]
+                                    xs = [p[0] for p in pts]
+                                    ys = [p[1] for p in pts]
+                                    width = max(xs) - min(xs)
+                                    depth = max(ys) - min(ys)
+                            except Exception:
+                                pass
+                        break
+                    break
+    except Exception:
+        pass
+
+    # Генерируем/загружаем планировку
+    fp = generate_floorplan_llm(
+        width=width,
+        depth=depth,
+        room_count=room_count,
+        building_pattern=req.building_type,
+        model=req.model,
+    ) or generate_floorplan(
+        width=width,
+        depth=depth,
+        room_count=room_count,
+    )
+
+    layout = generate_mep_layout(
+        fp=fp,
+        systems=req.systems,
+        model=req.model,
+    )
+
+    return {
+        "ok": True,
+        "source": layout.source,
+        "floorplan_source": fp.source,
+        "width": round(width, 2),
+        "depth": round(depth, 2),
+        "room_count": room_count,
+        "electrical": [e.__dict__ for e in layout.electrical],
+        "plumbing": [p.__dict__ for p in layout.plumbing],
+        "low_current": [l.__dict__ for l in layout.low_current],
+    }
+
+
 @app.post("/api/model/bim-generate")
 def model_bim_generate(req: BimGenerateRequest):
     """BIM-пайплайн: текст → IFC (по ТЗ)."""

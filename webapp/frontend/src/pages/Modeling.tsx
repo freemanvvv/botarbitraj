@@ -26,7 +26,7 @@ const DEFAULT_PARAMS = {
   door_width: 0.9, door_height: 2.1,
 };
 
-type Tab = "create" | "plan" | "nl" | "arch" | "view";
+type Tab = "create" | "plan" | "nl" | "arch" | "view" | "mep";
 
 interface ArchReasoning {
   footprint: string; floors: string; facade: string; structure: string; layout: string;
@@ -67,6 +67,28 @@ interface IntegrityResult {
   counts: { errors: number; warnings: number; total_elements: number };
 }
 
+// MEP-раскладки
+interface MepSocket {
+  kind: string; x: number; y: number; wall: string;
+  height_m: number; room_type: string; note: string;
+}
+
+interface MepPlumbing {
+  fixture: string; x: number; y: number; room_type: string;
+  supplies: string; need_drain: boolean; note: string;
+}
+
+interface MepLowCurrent {
+  kind: string; x: number; y: number; wall: string;
+  height_m: number; room_type: string; note: string;
+}
+
+interface MepResponse {
+  ok: boolean; source: string; floorplan_source: string;
+  width: number; depth: number; room_count: number;
+  electrical: MepSocket[]; plumbing: MepPlumbing[]; low_current: MepLowCurrent[];
+}
+
 export default function Modeling() {
   const [params, setParams] = useState({ ...DEFAULT_PARAMS });
   const [stats, setStats] = useState<Stats | null>(null);
@@ -97,6 +119,9 @@ export default function Modeling() {
   const [archModel, setArchModel] = useState("local-model");
   const [archIntegrity, setArchIntegrity] = useState<IntegrityResult | null>(null);
   const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural">("solver");
+  const [mepLoading, setMepLoading] = useState(false);
+  const [mepData, setMepData] = useState<MepResponse | null>(null);
+  const [mepExpanded, setMepExpanded] = useState<string | null>(null);
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -111,6 +136,28 @@ export default function Modeling() {
   }, []);
 
   const up = (key: string, val: any) => setParams(p => ({ ...p, [key]: val }));
+
+  const generateMep = async () => {
+    if (!selectedFile) { alert("Сначала выбери IFC-модель"); return; }
+    setMepLoading(true);
+    setMepData(null);
+    try {
+      const res = await fetch(`${API}/api/model/mep-generate`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          filename: selectedFile,
+          model: archModel,
+          systems: ["electrical", "plumbing", "low_current"],
+          building_type: "row",
+        }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || "Ошибка");
+      setMepData(d);
+    } catch (e: any) { alert("❌ " + e.message); }
+    finally { setMepLoading(false); }
+  };
 
   const refreshFiles = async () => {
     const r = await fetch(`${API}/api/model/existing`);
@@ -263,6 +310,7 @@ export default function Modeling() {
             ["plan",   "📐 По плану"],
             ["nl",     "🤖 По описанию"],
             ["view",   "Просмотр"],
+            ["mep",    "🔌 Инженерка"],
           ] as [Tab, string][]).map(([k, l]) => (
             <button key={k} className={`toggle-btn ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l}</button>
           ))}
@@ -689,11 +737,135 @@ export default function Modeling() {
               🖱 ЛКМ вращение · ПКМ панорама · Колёсико зум
             </p>
           </>)}
+
+          {/* ══ ИНЖЕНЕРКА ══ */}
+          {tab === "mep" && (<>
+            <h3 style={{ marginBottom: 8, color: "var(--accent)" }}>🔌 Инженерные системы</h3>
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 12, lineHeight: 1.6 }}>
+              После генерации ICF-модели можно разложить электрику, сантехнику и слаботочку.
+              Все точки рассчитываются по координатам комнат через LM Studio.
+            </p>
+
+            <div style={{ display: "flex", gap: 10, marginBottom: 14 }}>
+              <select
+                value={archModel}
+                onChange={e => setArchModel(e.target.value)}
+                disabled={mepLoading}
+                style={{ flex: 1, padding: "8px 10px", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: "0.83rem", fontFamily: "inherit" }}
+              >
+                {archModels.map(m => <option key={m} value={m}>{m}</option>)}
+              </select>
+              <button className="btn-gen" onClick={generateMep} disabled={mepLoading || !selectedFile}>
+                {mepLoading ? "⏳ Генерация..." : "🔌 Разложить инженерку"}
+              </button>
+            </div>
+
+            {mepData && (
+              <div style={{ fontSize: "0.72rem", color: "var(--text3)", marginBottom: 12 }}>
+                Планировка: {mepData.floorplan_source} · {mepData.width}×{mepData.depth} м · {mepData.room_count} комн.
+              </div>
+            )}
+
+            {/* Электрика */}
+            {mepData && mepData.electrical.length > 0 && (
+              <div style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                <div
+                  onClick={() => setMepExpanded(mepExpanded === "electrical" ? null : "electrical")}
+                  style={{ padding: "10px 12px", background: "var(--bg2)", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+                >
+                  <span style={{ fontSize: "0.85rem", flex: 1, fontWeight: 600, color: "var(--text)" }}>
+                    ⚡ Электрика ({mepData.electrical.length} точек)
+                  </span>
+                  <span style={{ color: "var(--text3)" }}>{mepExpanded === "electrical" ? "▾" : "▸"}</span>
+                </div>
+                {mepExpanded === "electrical" && (
+                  <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                    {mepData.electrical.map((e, i) => (
+                      <div key={i} style={{ padding: "6px 12px", borderTop: "1px solid var(--border)", fontSize: "0.76rem", color: "var(--text)", display: "flex", gap: 8 }}>
+                        <span style={{ width: 16, flexShrink: 0, opacity: 0.5 }}>•</span>
+                        <span style={{ fontWeight: 600, minWidth: 60, color: "var(--accent)" }}>{e.kind}</span>
+                        <span style={{ color: "var(--text2)" }}>{e.room_type}</span>
+                        <span style={{ color: "var(--text3)" }}>({e.x.toFixed(1)},{e.y.toFixed(1)}) на {e.height_m}м</span>
+                        {e.note && <span style={{ color: "var(--text3)", fontStyle: "italic" }}>— {e.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Сантехника */}
+            {mepData && mepData.plumbing.length > 0 && (
+              <div style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                <div
+                  onClick={() => setMepExpanded(mepExpanded === "plumbing" ? null : "plumbing")}
+                  style={{ padding: "10px 12px", background: "var(--bg2)", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+                >
+                  <span style={{ fontSize: "0.85rem", flex: 1, fontWeight: 600, color: "var(--text)" }}>
+                    🚰 Сантехника ({mepData.plumbing.length} приборов)
+                  </span>
+                  <span style={{ color: "var(--text3)" }}>{mepExpanded === "plumbing" ? "▾" : "▸"}</span>
+                </div>
+                {mepExpanded === "plumbing" && (
+                  <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                    {mepData.plumbing.map((p, i) => (
+                      <div key={i} style={{ padding: "6px 12px", borderTop: "1px solid var(--border)", fontSize: "0.76rem", color: "var(--text)", display: "flex", gap: 8 }}>
+                        <span style={{ width: 16, flexShrink: 0, opacity: 0.5 }}>•</span>
+                        <span style={{ fontWeight: 600, minWidth: 70, color: "#30d158" }}>{p.fixture}</span>
+                        <span style={{ color: "var(--text2)" }}>{p.room_type}</span>
+                        <span style={{ color: "var(--text3)" }}>({p.x.toFixed(1)},{p.y.toFixed(1)})</span>
+                        <span style={{ color: "var(--text3)" }}>{p.supplies}</span>
+                        {p.note && <span style={{ color: "var(--text3)", fontStyle: "italic" }}>— {p.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {/* Слаботочка */}
+            {mepData && mepData.low_current.length > 0 && (
+              <div style={{ marginBottom: 10, border: "1px solid var(--border)", borderRadius: 8, overflow: "hidden" }}>
+                <div
+                  onClick={() => setMepExpanded(mepExpanded === "lowCurrent" ? null : "lowCurrent")}
+                  style={{ padding: "10px 12px", background: "var(--bg2)", cursor: "pointer", display: "flex", alignItems: "center", gap: 8 }}
+                >
+                  <span style={{ fontSize: "0.85rem", flex: 1, fontWeight: 600, color: "var(--text)" }}>
+                    📡 Слаботочка ({mepData.low_current.length} точек)
+                  </span>
+                  <span style={{ color: "var(--text3)" }}>{mepExpanded === "lowCurrent" ? "▾" : "▸"}</span>
+                </div>
+                {mepExpanded === "lowCurrent" && (
+                  <div style={{ maxHeight: 300, overflowY: "auto" }}>
+                    {mepData.low_current.map((l, i) => (
+                      <div key={i} style={{ padding: "6px 12px", borderTop: "1px solid var(--border)", fontSize: "0.76rem", color: "var(--text)", display: "flex", gap: 8 }}>
+                        <span style={{ width: 16, flexShrink: 0, opacity: 0.5 }}>•</span>
+                        <span style={{ fontWeight: 600, minWidth: 60, color: "#bf5af2" }}>{l.kind}</span>
+                        <span style={{ color: "var(--text2)" }}>{l.room_type}</span>
+                        <span style={{ color: "var(--text3)" }}>({l.x.toFixed(1)},{l.y.toFixed(1)}) на {l.height_m}м</span>
+                        {l.note && <span style={{ color: "var(--text3)", fontStyle: "italic" }}>— {l.note}</span>}
+                      </div>
+                    ))}
+                  </div>
+                )}
+              </div>
+            )}
+
+            {!mepData && !mepLoading && (
+              <div style={{ marginTop: 12, padding: "12px 14px", background: "var(--bg2)", borderRadius: 8, fontSize: "0.78rem", color: "var(--text2)", lineHeight: 1.8 }}>
+                <strong style={{ color: "var(--text3)" }}>Как работает:</strong><br />
+                1. Сначала сгенерируй IFC на любой из вкладок (Параметры / Архитектор / По описанию)<br />
+                2. Перейди сюда, выбери модель и нажми «Разложить инженерку»<br />
+                3. LLM расставит розетки, выключатели, светильники, трубы и слаботочку<br />
+                <span style={{ fontSize: "0.72rem", color: "var(--text3)" }}>* Нужна IFC-модель в списке (вкладка Просмотр)</span>
+              </div>
+            )}
+          </>)}
         </div>
 
         {/* ─── Right: 3D viewer ─── */}
         <div className="modeling-viewer">
-          {selectedFile && (tab === "view" || tab === "create" || tab === "nl" || tab === "arch") ? (
+          {selectedFile && (tab === "view" || tab === "create" || tab === "nl" || tab === "arch" || tab === "mep") ? (
             <ThreeViewer filename={selectedFile} />
           ) : (
             <div className="viewer-placeholder">

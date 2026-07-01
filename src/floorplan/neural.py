@@ -143,7 +143,7 @@ def _save_to_cache(
 # ── Few-shot примеры ───────────────────────────────────────────────────────
 
 _FEW_SHOT_EXAMPLES = """
-ПРИМЕР 1: Квартира 5.0×9.0 м, 2-комнатная (спальня+гостиная+кухня+санузел), вход слева.
+ПРИМЕР 1: Квартира 5.0\xd79.0 м, 2-комнатная (спальня+гостиная+кухня+санузел), вход слева.
 {"rooms": [
   {"type": "hallway",  "x0": 0,   "y0": 0,   "x1": 1.4, "y1": 9.0},
   {"type": "living",   "x0": 1.4, "y0": 4.0, "x1": 5.0, "y1": 9.0},
@@ -152,7 +152,7 @@ _FEW_SHOT_EXAMPLES = """
   {"type": "bathroom", "x0": 1.4, "y0": 0,   "x1": 3.2, "y1": 2.0}
 ]}
 
-ПРИМЕР 2: Квартира 6.0×9.0 м, 3-комнатная (2 спальни+гостиная+кухня+санузел+туалет), вход слева.
+ПРИМЕР 2: Квартира 6.0\xd79.0 м, 3-комнатная (2 спальни+гостиная+кухня+санузел+туалет), вход слева.
 {"rooms": [
   {"type": "hallway",  "x0": 0,   "y0": 0,   "x1": 1.5, "y1": 9.0},
   {"type": "living",   "x0": 1.5, "y0": 5.0, "x1": 6.0, "y1": 9.0},
@@ -163,7 +163,7 @@ _FEW_SHOT_EXAMPLES = """
   {"type": "bathroom", "x0": 4.8, "y0": 0,   "x1": 6.0, "y1": 0.8}
 ]}
 
-ПРИМЕР 3: Квартира 7.0×10.0 м, 3-комнатная (2 спальни+living+kitchen+bathroom+WC), вход справа.
+ПРИМЕР 3: Квартира 7.0\xd710.0 м, 3-комнатная (2 спальни+living+kitchen+bathroom+WC), вход справа.
 {"rooms": [
   {"type": "hallway",  "x0": 5.6, "y0": 0,   "x1": 7.0, "y1": 10.0},
   {"type": "living",   "x0": 0,   "y0": 6.0, "x1": 5.6, "y1": 10.0},
@@ -174,6 +174,29 @@ _FEW_SHOT_EXAMPLES = """
   {"type": "bathroom", "x0": 4.0, "y0": 0,   "x1": 5.6, "y1": 1.2}
 ]}
 """
+
+# Шаблоны типов застройки — дополнительный few-shot для разных конфигураций квартир
+_BUILDING_PATTERNS = {
+    "row": (  # рядовая (средняя) секция — кухня/санузел у площадки, жилые комнаты у фасада
+        "ТИПОВАЯ РЯДОВАЯ (общая стена с двух сторон):\n"
+        "Прихожая-коридор вдоль одной стены (ширина 1.4-1.6м) на всю глубину.\n"
+        "Мокрые зоны (кухня, санузел) — ближе к входу (y=0), компактным блоком.\n"
+        "Жилые комнаты (гостиная, спальни) — у фасада (y=depth), все с окнами.\n"
+        "Кухня может быть как у фасада (окно на двор), так и ближе к площадке."
+    ),
+    "corner": (  # угловая секция — окна на две стороны
+        "УГЛОВАЯ (окна на две стороны):\n"
+        "Часть комнат может иметь окна по боковой стене (x=0 или x=width).\n"
+        "Угловая гостиная (два окна) — преимущество.\n"
+        "Прихожая — со стороны площадки, остальное — как рядовая."
+    ),
+    "duplex": (
+        "ДВУХУРОВНЕВАЯ КВАРТИРА:\n"
+        "Первый уровень: прихожая, кухня-гостиная, санузел, выход на террасу.\n"
+        "Второй уровень (не моделируется здесь): спальни, ванная.\n"
+        "Планировка первого уровня: открытая кухня-гостиная во всю ширину фасада."
+    ),
+}
 
 
 # ── Парсинг и построение промпта ───────────────────────────────────────────
@@ -199,11 +222,14 @@ def _rooms_from_llm_json(rooms_raw: list) -> list[RoomBox]:
 def _build_prompt(
     width: float, depth: float, entry_side: str, program: dict,
     repair_hints: str = "",
+    building_pattern: str = "row",
 ) -> tuple[str, str]:
     """Строит системный и пользовательский промпты.
 
-    Если repair_hints непусто — это repair-раунд: LLM видит предыдущую ошибку
+    If repair_hints непусто — это repair-раунд: LLM видит предыдущую ошибку
     и получает более жёсткие инструкции.
+
+    building_pattern — тип секции: "row" (рядовая), "corner" (угловая), "duplex" (двухуровневая).
     """
     all_types = program.get("wet", []) + program.get("facade", []) + ["hallway"]
     lines = []
@@ -232,7 +258,8 @@ def _build_prompt(
         "ПРИМЕРЫ РЕАЛЬНЫХ ПЛАНИРОВОК (используй их как образец расположения, "
         "но подставляй свои координаты под текущие габариты):\n"
         + _FEW_SHOT_EXAMPLES + "\n"
-        "Нормы КМК 2.08.01-89 по комнатам:\n" + "\n".join(lines) + "\n\n"
+        + (_BUILDING_PATTERNS.get(building_pattern, "") + "\n\n" if building_pattern in _BUILDING_PATTERNS else "")
+        + "Нормы КМК 2.08.01-89 по комнатам:\n" + "\n".join(lines) + "\n\n"
         "Правила:\n"
         "1. Комнаты — прямоугольники, НЕ должны пересекаться друг с другом.\n"
         "2. Каждая комната обязана полностью помещаться в границы квартиры "
@@ -315,6 +342,7 @@ def generate_floorplan_llm(
     model: str = "local-model",
     max_repair_attempts: int = 2,
     timeout: float = 60.0,
+    building_pattern: str = "row",
 ) -> ApartmentFloorplan | None:
     """
     Пытается сгенерировать планировку через локальную LLM (LM Studio).
@@ -326,6 +354,8 @@ def generate_floorplan_llm(
        (до max_repair_attempts повторов).
     3. При успехе — сохранить в кэш.
     4. При неудаче — вернуть None (вызывающий код откатывается на solver).
+
+    building_pattern: "row" (рядовая), "corner" (угловая), "duplex" (двухуровневая).
 
     Возвращает ApartmentFloorplan (source="neural") или None.
     """
@@ -343,7 +373,8 @@ def generate_floorplan_llm(
         return cached
 
     # ── Шаг 2: LLM-генерация ────────────────────────────────────────────────
-    sys_prompt, user_prompt = _build_prompt(width, depth, entry_side, prog)
+    sys_prompt, user_prompt = _build_prompt(width, depth, entry_side, prog,
+                                             building_pattern=building_pattern)
     messages = [
         {"role": "system", "content": sys_prompt},
         {"role": "user", "content": user_prompt},
@@ -423,6 +454,7 @@ def generate_floorplan_llm(
             # Перестраиваем системный промпт с repair-хинтами
             sys_prompt_r, _ = _build_prompt(
                 width, depth, entry_side, prog, repair_hints=repair_hints,
+                building_pattern=building_pattern,
             )
             messages = [
                 {"role": "system", "content": sys_prompt_r},
