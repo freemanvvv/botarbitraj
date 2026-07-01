@@ -24,6 +24,7 @@ const DEFAULT_PARAMS = {
   windows_per_wall_long: 3, windows_per_wall_short: 2,
   window_width: 1.2, window_height: 1.5, window_sill: 0.9,
   door_width: 0.9, door_height: 2.1,
+  entrances: 1, apartments_per_landing: 2, apartment_rooms: 2,
 };
 
 type Tab = "create" | "plan" | "nl" | "arch" | "view" | "mep";
@@ -118,6 +119,10 @@ export default function Modeling() {
   const [archModels, setArchModels] = useState<string[]>(["local-model"]);
   const [archModel, setArchModel] = useState("local-model");
   const [archIntegrity, setArchIntegrity] = useState<IntegrityResult | null>(null);
+  const [floorplanMode, setFloorplanMode] = useState<"solver" | "neural" | "chathousediffusion">("solver");
+  const [floorplanModel, setFloorplanModel] = useState("local-model");
+  const buildingPattern = "row";
+  const [showApartmentParams, setShowApartmentParams] = useState(false);
   const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural" | "chathousediffusion">("solver");
   const [mepLoading, setMepLoading] = useState(false);
   const [mepData, setMepData] = useState<MepResponse | null>(null);
@@ -170,7 +175,16 @@ export default function Modeling() {
       const res = await fetch(`${API}/api/model/generate`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...params, height: params.height }),
+        body: JSON.stringify({
+          ...params,
+          height: params.height,
+          floorplan_mode: floorplanMode,
+          model: floorplanModel,
+          building_pattern: buildingPattern,
+          entrances: showApartmentParams ? (params.entrances || 1) : 0,
+          apartments_per_landing: showApartmentParams ? (params.apartments_per_landing || 2) : 0,
+          apartment_rooms: showApartmentParams ? (params.apartment_rooms || 2) : 2,
+        }),
       });
       const data = await res.json();
       if (!res.ok) throw new Error(data.detail || "Ошибка");
@@ -625,6 +639,47 @@ export default function Modeling() {
             <CheckRow label="Перегородки" checked={params.add_internal_walls} onChange={v => up("add_internal_walls", v)} />
             <CheckRow label="Балконы" checked={params.add_balconies} onChange={v => up("add_balconies", v)} />
             <CheckRow label="Фундамент" checked={params.add_foundation} onChange={v => up("add_foundation", v)} />
+
+            <Divider label="Планировка квартир" />
+            <div style={{ display: "flex", gap: 6, marginBottom: 6, alignItems: "center" }}>
+              <input type="checkbox" checked={showApartmentParams} onChange={e => setShowApartmentParams(e.target.checked)}
+                style={{ width: 16, height: 16, accentColor: "var(--accent)" }} />
+              <span style={{ fontSize: "0.8rem", color: "var(--text2)" }}>Многоквартирный дом</span>
+            </div>
+
+            {showApartmentParams && (<>
+              <Label>Подъездов
+                <input type="number" value={params.entrances||1} onChange={e => up("entrances", Math.max(1,+e.target.value))} min={1} max={10} />
+              </Label>
+              <Label>Квартир на площадке
+                <input type="number" value={params.apartments_per_landing||2} onChange={e => up("apartments_per_landing", Math.max(1,+e.target.value))} min={1} max={4} />
+              </Label>
+              <Label>Комнат в квартире
+                <input type="number" value={params.apartment_rooms||2} onChange={e => up("apartment_rooms", Math.max(1,+e.target.value))} min={1} max={5} />
+              </Label>
+            </>)}
+
+            <label style={{ display: "block", marginBottom: 4, fontSize: "0.8rem", color: "var(--text)" }}>
+              Генератор планировки
+            </label>
+            <select
+              value={floorplanMode}
+              onChange={e => setFloorplanMode(e.target.value as "solver" | "neural" | "chathousediffusion")}
+              disabled={loading}
+              style={{ width: "100%", padding: "8px 10px", marginBottom: 6, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: "0.83rem", fontFamily: "inherit" }}
+            >
+              <option value="solver">Детерминированный генератор (по умолчанию)</option>
+              <option value="neural">🧠 ИИ-планировка (локальная LLM)</option>
+              <option value="chathousediffusion">🏠 ChatHouseDiffusion (внешний мост)</option>
+            </select>
+            {floorplanMode !== "solver" && (
+              <Label>Модель LLM
+                <select value={floorplanModel} onChange={e => setFloorplanModel(e.target.value)}
+                  style={{ width: "100%", padding: "8px 10px", background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: "0.8rem", fontFamily: "inherit" }}>
+                  {archModels.map(m => <option key={m} value={m}>{m}</option>)}
+                </select>
+              </Label>
+            )}
 
             <button className="btn-gen" onClick={generate} disabled={loading} style={{ marginTop: 14 }}>
               {loading ? "⏳ Генерация..." : "Сгенерировать IFC"}

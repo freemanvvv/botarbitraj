@@ -351,39 +351,74 @@ class BuildingParams(BaseModel):
     window_sill: float = Field(0.9, ge=0, le=5)
     door_width: float = Field(0.9, gt=0, le=5)
     door_height: float = Field(2.1, gt=0, le=5)
+    # Apartment / multi-entrance params
+    entrances: int = Field(0, ge=0, le=20)
+    apartments_per_landing: int = Field(0, ge=0, le=4)
+    apartment_rooms: int = Field(2, ge=1, le=5)
+    floorplan_mode: str = "solver"
+    model: str = "local-model"
+    building_pattern: str = "row"
 
 
 @app.post("/api/model/generate")
 def model_generate(params: BuildingParams):
     """Генерация IFC-модели."""
     try:
-        from src.ifc_generator import create_max_building
-        path, stats = create_max_building(
-            name=params.name,
-            length=params.length,
-            width=params.width,
-            height=params.height,
-            num_floors=params.num_floors,
-            floor_height=params.floor_height,
-            wall_thickness=params.wall_thickness,
-            slab_thickness=params.slab_thickness,
-            roof_type=params.roof_type,
-            add_internal_walls=params.add_internal_walls,
-            add_windows=params.add_windows,
-            add_doors=params.add_doors,
-            add_columns=params.add_columns,
-            add_beams=params.add_beams,
-            add_stairs=params.add_stairs,
-            add_balconies=params.add_balconies,
-            add_foundation=params.add_foundation,
-            windows_per_wall_long=params.windows_per_wall_long,
-            windows_per_wall_short=params.windows_per_wall_short,
-            window_width=params.window_width,
-            window_height=params.window_height,
-            window_sill=params.window_sill,
-            door_width=params.door_width,
-            door_height=params.door_height,
-        )
+        if params.entrances > 0 or params.apartments_per_landing > 0:
+            from src.ifc_generator import create_apartment_building
+            fh = (params.height / params.num_floors) if not params.floor_height else params.floor_height
+            path, stats = create_apartment_building(
+                name=params.name,
+                num_floors=params.num_floors,
+                floor_height=fh,
+                entrances=max(1, params.entrances),
+                apartments_per_landing=max(1, params.apartments_per_landing),
+                apartment_rooms=params.apartment_rooms,
+                floorplan_mode=params.floorplan_mode if params.floorplan_mode in ("solver","neural","chathousediffusion") else "solver",
+                llm_model=params.model,
+                building_pattern=params.building_pattern,
+                wall_thickness=params.wall_thickness,
+                slab_thickness=params.slab_thickness,
+                roof_type=params.roof_type if params.roof_type in ("flat","gable") else "flat",
+                add_windows=params.add_windows,
+                add_doors=params.add_doors,
+                add_columns=params.add_columns,
+                add_beams=params.add_beams,
+                add_foundation=params.add_foundation,
+                window_width=params.window_width,
+                window_height=params.window_height,
+                window_sill=params.window_sill,
+                door_width=params.door_width,
+                door_height=params.door_height,
+            )
+        else:
+            from src.ifc_generator import create_max_building
+            path, stats = create_max_building(
+                name=params.name,
+                length=params.length,
+                width=params.width,
+                height=params.height,
+                num_floors=params.num_floors,
+                floor_height=params.floor_height,
+                wall_thickness=params.wall_thickness,
+                slab_thickness=params.slab_thickness,
+                roof_type=params.roof_type,
+                add_internal_walls=params.add_internal_walls,
+                add_windows=params.add_windows,
+                add_doors=params.add_doors,
+                add_columns=params.add_columns,
+                add_beams=params.add_beams,
+                add_stairs=params.add_stairs,
+                add_balconies=params.add_balconies,
+                add_foundation=params.add_foundation,
+                windows_per_wall_long=params.windows_per_wall_long,
+                windows_per_wall_short=params.windows_per_wall_short,
+                window_width=params.window_width,
+                window_height=params.window_height,
+                window_sill=params.window_sill,
+                door_width=params.door_width,
+                door_height=params.door_height,
+            )
         return {
             "path": path,
             "stats": stats,
