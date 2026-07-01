@@ -32,13 +32,32 @@ def test_returns_none_when_bridge_script_path_does_not_exist(monkeypatch):
     assert result is None
 
 
-def _label_grid_for(width_m, depth_m, px_per_meter):
+def _label_grid_for(width_m, depth_m, px_per_meter, resolution=64):
+    """
+    Строит правдоподобный растр предсказания — квадратный холст resolution×
+    resolution (как реальный выход их модели) с footprint'ом квартиры внутри
+    отступа (та же формула, что и в chathousediffusion_adapter._rasterize_footprint:
+    margin_frac=0.06, ox/oy — отступ до угла footprint'а). Раньше здесь была
+    grid без отступа во весь холст — из-за этого не был замечен реальный баг
+    адаптера (не вычитался margin из координат распознанных комнат); теперь
+    тестовый растр математически соответствует тому, что адаптер реально
+    посылает и получает обратно.
+    """
     import numpy as np
-    h, w = int(depth_m * px_per_meter), int(width_m * px_per_meter)
-    grid = np.zeros((h, w), dtype=np.uint8)
-    mid = w // 2
-    grid[:, :mid] = 0   # living, примыкает к входу (west, x=0)
-    grid[:, mid:] = 2   # kitchen
+
+    margin_frac = 0.06
+    scale = (1.0 - 2 * margin_frac) * resolution / max(width_m, depth_m)
+    px_w, px_h = width_m * scale, depth_m * scale
+    ox, oy = (resolution - px_w) / 2, (resolution - px_h) / 2
+
+    EXTERNAL, EXTWALL, LIVING, KITCHEN = 13, 14, 0, 2
+    grid = np.full((resolution, resolution), EXTERNAL, dtype=np.uint8)
+    y0, y1 = round(oy), round(oy + px_h)
+    x0, x1 = round(ox), round(ox + px_w)
+    grid[y0:y1, x0:x1] = EXTWALL
+    mid = x0 + (x1 - x0) // 2
+    grid[y0 + 1:y1 - 1, x0 + 1:mid] = LIVING     # примыкает к входу (west, x=0)
+    grid[y0 + 1:y1 - 1, mid:x1 - 1] = KITCHEN
     return grid.tolist()
 
 

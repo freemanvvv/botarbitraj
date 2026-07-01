@@ -106,9 +106,17 @@ CMAP = [
 _ROOM_CLASSES = [LIVING, MASTER, KITCHEN, BATHROOM, DINING, CHILD, STUDY, SECOND, GUEST, ENTRANCE]
 # При коллизии цвета 0/10/12 берём по умолчанию LivingRoom — Entrance
 # переопределяется эвристикой _split_living_entrance ниже.
+#
+# EXTERNAL обязателен в этом списке, даже хотя это не "комната": белый
+# (255,255,255) — это цвет фона/InteriorWall/InteriorDoor (13/16/17 делят
+# один цвет), и если не дать ему представителя, ближайший по евклидовому
+# расстоянию цвет для белого — ЖИВАЯ КОМНАТА (238,232,170), а не что-то
+# нейтральное (проверено численно: 8043 против ~10270 у следующего
+# кандидата). Без этой записи весь фон/стены/двери на реальном
+# предсказании превратились бы в один гигантский ложный LivingRoom.
 _COLOR_GROUP_DEFAULT_CLASS = {tuple(CMAP[c]): c for c in [LIVING, MASTER, KITCHEN, BATHROOM,
                                                             DINING, CHILD, BALCONY, STORAGE,
-                                                            EXTWALL, FRONTDOOR]}
+                                                            EXTWALL, FRONTDOOR, EXTERNAL]}
 
 
 def _log(msg: str) -> None:

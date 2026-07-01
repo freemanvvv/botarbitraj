@@ -48,6 +48,16 @@ from .solver import _default_program
 # равно считались соединёнными дверью.
 _WALL_GAP_TOLERANCE_M = 0.25
 
+# Та же логика для внешней границы: их таксономия рисует полосу
+# "ExteriorWall" (класс 14) внутри того же холста, вдоль контура footprint'а
+# (см. room_label в их image_process.py) — комната, реально примыкающая к
+# фасаду, после векторизации останавливается на толщину этой полосы раньше
+# истинной границы квартиры, а не точно на ней. Верифицировано прогоном
+# реального bridge-скрипта на синтетическом предсказании: разрыв вышел
+# ~0.3 м при разрешении маски 64px на 6-8-метровую комнату. Берём допуск
+# с запасом (точная толщина их полосы нам не известна без реальных весов).
+_FACADE_SNAP_TOLERANCE_M = 0.5
+
 
 def _rasterize_footprint(width_m: float, depth_m: float, resolution: int = 64):
     """
@@ -55,9 +65,14 @@ def _rasterize_footprint(width_m: float, depth_m: float, resolution: int = 64):
     (ui.py: get_binary() — чёрный прямоугольник контура на белом фоне,
     квадратное изображение resolution×resolution с отступом от края).
 
-    Возвращает (PIL.Image в режиме "L", px_per_meter) — масштаб связывает
-    пиксели маски с метрами квартиры (тем самым же путём при обратной
-    конвертации растра предсказания в метры в raster_to_rooms).
+    Возвращает (PIL.Image в режиме "L", px_per_meter, ox_m, oy_m) — масштаб
+    связывает пиксели маски с метрами квартиры (тем же путём при обратной
+    конвертации растра предсказания в метры в raster_to_rooms), а ox_m/oy_m —
+    отступ (в метрах) от угла холста до угла самого footprint'а (квадратный
+    64x64 холст всегда больше прямоугольной квартиры). Предсказанный растр
+    приходит в координатах ТОГО ЖЕ холста — координаты извлечённых комнат
+    нужно сдвинуть на -ox_m/-oy_m, чтобы получить координаты, локальные для
+    квартиры (0,0) в углу footprint'а, а не холста (см. _offset_rooms ниже).
     """
     from PIL import Image, ImageDraw
 
@@ -71,7 +86,23 @@ def _rasterize_footprint(width_m: float, depth_m: float, resolution: int = 64):
     img = Image.new("L", (resolution, resolution), color=255)
     draw = ImageDraw.Draw(img)
     draw.rectangle([ox, oy, ox + px_w, oy + px_h], fill=0)
-    return img, scale
+    return img, scale, ox / scale, oy / scale
+
+
+def _offset_rooms(rooms, dx: float, dy: float):
+    """Сдвигает координаты всех комнат (боксов и полигонов) на (dx, dy) —
+    перевод из координат холста маски (см. _rasterize_footprint) в координаты,
+    локальные для квартиры."""
+    from .ir import RoomBox
+
+    shifted = []
+    for r in rooms:
+        if r.polygon:
+            pts = [(x + dx, y + dy) for x, y in r.polygon]
+            shifted.append(RoomBox.from_polygon(r.type, pts, name=r.name))
+        else:
+            shifted.append(RoomBox(r.type, r.x0 + dx, r.y0 + dy, r.x1 + dx, r.y1 + dy, name=r.name))
+    return shifted
 
 
 def _snap_to_footprint(rooms, width: float, depth: float, tol: float):
@@ -156,7 +187,7 @@ def generate_floorplan_chd(
         return None
 
     prog = program or _default_program(room_count)
-    mask_img, px_per_meter = _rasterize_footprint(width, depth)
+    mask_img, px_per_meter, ox_m, oy_m = _rasterize_footprint(width, depth)
 
     with tempfile.TemporaryDirectory() as tmpdir:
         mask_path = os.path.join(tmpdir, "mask.png")
@@ -205,7 +236,14 @@ def generate_floorplan_chd(
     if not rooms:
         return None
 
-    rooms = _snap_to_footprint(rooms, width, depth, tol=2.0 / out_px_per_meter)
+    # Координаты после raster_to_rooms — в системе координат холста маски
+    # (см. _rasterize_footprint), а не квартиры: холст квадратный и больше
+    # прямоугольного footprint'а, с отступом (ox_m, oy_m) до его угла.
+    # Без этого сдвига комнаты, реально примыкающие к границам квартиры,
+    # окажутся на них НЕ похожи (окажутся смещены вглубь на величину отступа
+    # маски), что ломает проверку окон/фасада и "не выходит за пределы".
+    rooms = _offset_rooms(rooms, -ox_m, -oy_m)
+    rooms = _snap_to_footprint(rooms, width, depth, tol=_FACADE_SNAP_TOLERANCE_M)
     doors = connect_adjacent_rooms(rooms, eps=_WALL_GAP_TOLERANCE_M)
 
     hub_idx = _entry_hub_index(rooms, doors)
