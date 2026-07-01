@@ -44,8 +44,16 @@ def _get_xyz(product) -> tuple[float, float, float] | None:
 
 
 def _parse_section(name: str) -> int | None:
-    """'Стояк_ВК 2-3' → 2;  'Лифт 1.2' → 1;  None если не удалось."""
-    m = re.search(r'(\d+)\s*[-.]', name or "")
+    """'Марш подъезд 2 эт.5' → 2;  'Лифт 1.2' → 1;  'Стояк_ВК 2-3' → 2;
+    None если не удалось. Реальные имена элементов из ifc_generator.py
+    используют оба стиля ('подъезд N ...' и 'Лифт N.M') — оба должны матчиться,
+    иначе Check 2/3 в validate_model_integrity молча не находят ни одной секции.
+    """
+    name = name or ""
+    m = re.search(r'подъезд\s+(\d+)', name, re.IGNORECASE)
+    if m:
+        return int(m.group(1))
+    m = re.search(r'(\d+)\s*[-.]', name)
     return int(m.group(1)) if m else None
 
 

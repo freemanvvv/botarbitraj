@@ -1,4 +1,5 @@
 import { useState } from "react";
+import type { JSX } from "react";
 import Archive from "./pages/Archive";
 import ChatTab from "./pages/ChatTab";
 import Modeling from "./pages/Modeling";

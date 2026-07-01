@@ -229,8 +229,6 @@ export default function Modeling() {
     finally { setArchLoading(false); }
   };
 
-  const fmt = (ts: number) => new Date(ts * 1000).toLocaleString().slice(0, -3);
-
   const Label = ({ children }: { children: React.ReactNode }) => (
     <label style={{ display: "block", marginBottom: 13, fontSize: "0.78rem", color: "var(--text2)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.06em" }}>
       {children}
@@ -333,7 +331,7 @@ export default function Modeling() {
                   ["norms",      "📚 Изучение норм КМК/ШНК Узбекистана..."],
                   ["planning",   "📐 Составление плана здания по нормам..."],
                   ["generating", "🏗 Генерация IFC-модели..."],
-                ] as [typeof archStep, string][]).map(([step, label], i) => {
+                ] as [typeof archStep, string][]).map(([step, label]) => {
                   const steps = ["norms","planning","generating","done"];
                   const current = steps.indexOf(archStep);
                   const mine = steps.indexOf(step);
