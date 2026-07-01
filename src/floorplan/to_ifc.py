@@ -17,39 +17,37 @@ _add_door_to_wall на нужной стене.
 модуль на верхнем уровне, а этот модуль обращается к ifc_generator только
 в момент вызова floorplan_to_ifc(), когда тот уже полностью загружен.
 """
+import math
+
 from .ir import ApartmentFloorplan
+from .geometry import room_edges, collinear_overlap
 
 
 def _collect_partition_walls(fp: ApartmentFloorplan, eps: float = 0.02):
-    """Общие границы комнат → сегменты стен [(x0,y0,x1,y1,axis,room_a,room_b), ...].
-    axis="x" — стена идёт вдоль X (разделяет комнаты, стоящие друг над другом по Y);
-    axis="y" — стена идёт вдоль Y (разделяет комнаты, стоящие рядом по X).
+    """Общие границы комнат → сегменты стен [(p0, p1, room_a, room_b), ...],
+    p0/p1 — точки (x,y) начала/конца стены в локальных координатах квартиры.
+
+    Работает и для прямоугольных комнат (солвер/LLM), и для произвольных
+    полигонов (после векторизации растра ChatHouseDiffusion) через общий
+    поиск коллинеарных перекрывающихся рёбер (geometry.py) — для
+    прямоугольников даёт тот же результат, что и прежняя box-only версия.
     """
     segments = []
     n = len(fp.rooms)
+    edges = [room_edges(r) for r in fp.rooms]
     for i in range(n):
-        a = fp.rooms[i]
         for j in range(i + 1, n):
-            b = fp.rooms[j]
-            if abs(a.x1 - b.x0) < eps:
-                y0, y1 = max(a.y0, b.y0), min(a.y1, b.y1)
-                if y1 - y0 > eps:
-                    segments.append((a.x1, y0, a.x1, y1, "y", i, j))
-                    continue
-            if abs(b.x1 - a.x0) < eps:
-                y0, y1 = max(a.y0, b.y0), min(a.y1, b.y1)
-                if y1 - y0 > eps:
-                    segments.append((a.x0, y0, a.x0, y1, "y", i, j))
-                    continue
-            if abs(a.y1 - b.y0) < eps:
-                x0, x1 = max(a.x0, b.x0), min(a.x1, b.x1)
-                if x1 - x0 > eps:
-                    segments.append((x0, a.y1, x1, a.y1, "x", i, j))
-                    continue
-            if abs(b.y1 - a.y0) < eps:
-                x0, x1 = max(a.x0, b.x0), min(a.x1, b.x1)
-                if x1 - x0 > eps:
-                    segments.append((x0, a.y0, x1, a.y0, "x", i, j))
+            found = None
+            for ea in edges[i]:
+                for eb in edges[j]:
+                    seg = collinear_overlap(ea, eb, eps)
+                    if seg:
+                        found = seg
+                        break
+                if found:
+                    break
+            if found:
+                segments.append((found[0], found[1], i, j))
     return segments
 
 
@@ -73,7 +71,7 @@ def floorplan_to_ifc(
     IfcOpeningElement, IfcDoor) для добавления в IfcRelContainedInSpatialStructure.
     """
     from src.ifc_generator import (
-        _make_placement, _rect_profile, _extrude, _shape_rep,
+        _make_placement, _rect_profile, _polygon_profile, _extrude, _shape_rep,
         _assign_material, _add_door_to_wall, _set_pset, _g, _d3,
     )
 
@@ -85,9 +83,16 @@ def floorplan_to_ifc(
     for room in fp.rooms:
         space = ifc.create_entity("IfcSpace", g(), None, f"{name_prefix}{room.name or room.type}")
         space.PredefinedType = "INTERNAL"
-        space.ObjectPlacement = _make_placement(ifc, ox + room.x0, oy + room.y0, wz)
-        prof = _rect_profile(ifc, max(room.width, 0.05), max(room.depth, 0.05),
-                              cx=room.width / 2, cy=room.depth / 2)
+        if room.polygon:
+            # Полигон уже в локальных координатах квартиры — переносим точки
+            # в СК помещения (относительно его же ObjectPlacement).
+            space.ObjectPlacement = _make_placement(ifc, ox + room.x0, oy + room.y0, wz)
+            local_pts = [(x - room.x0, y - room.y0) for x, y in room.polygon]
+            prof = _polygon_profile(ifc, local_pts)
+        else:
+            space.ObjectPlacement = _make_placement(ifc, ox + room.x0, oy + room.y0, wz)
+            prof = _rect_profile(ifc, max(room.width, 0.05), max(room.depth, 0.05),
+                                  cx=room.width / 2, cy=room.depth / 2)
         space.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
             [_shape_rep(ifc, ctx, [_extrude(ifc, prof, floor_height - 0.05)])])
         _set_pset(ifc, space, "Pset_SpaceCommon", {
@@ -103,16 +108,16 @@ def floorplan_to_ifc(
             continue
         door_map[tuple(sorted((d.room_a, d.room_b)))] = d
 
-    for x0, y0, x1, y1, axis, ra, rb in _collect_partition_walls(fp):
-        wall_len = (x1 - x0) if axis == "x" else (y1 - y0)
+    for p0, p1, ra, rb in _collect_partition_walls(fp):
+        dx, dy = p1[0] - p0[0], p1[1] - p0[1]
+        wall_len = math.hypot(dx, dy)
         if wall_len <= 0.05:
             continue
+        ux, uy = dx / wall_len, dy / wall_len  # единичное направление стены (не только оси X/Y)
+
         wall = ifc.create_entity("IfcWall", g(), None, f"{name_prefix}Перегородка")
         wall.PredefinedType = "PARTITIONING"
-        if axis == "x":
-            wall.ObjectPlacement = _make_placement(ifc, ox + x0, oy + y0, wz, x_axis=_d3(ifc, 1, 0, 0))
-        else:
-            wall.ObjectPlacement = _make_placement(ifc, ox + x0, oy + y0, wz, x_axis=_d3(ifc, 0, 1, 0))
+        wall.ObjectPlacement = _make_placement(ifc, ox + p0[0], oy + p0[1], wz, x_axis=_d3(ifc, ux, uy, 0))
         prof = _rect_profile(ifc, wall_len, pt, cx=wall_len / 2, cy=pt / 2)
         wall.Representation = ifc.create_entity("IfcProductDefinitionShape", None, None,
             [_shape_rep(ifc, ctx, [_extrude(ifc, prof, floor_height - 0.1)])])
@@ -121,7 +126,9 @@ def floorplan_to_ifc(
 
         d = door_map.get(tuple(sorted((ra, rb))))
         if d is not None:
-            door_x_local = (d.x - x0) if axis == "x" else (d.y - y0)
+            # Проекция позиции двери на направление стены — корректно и для
+            # осевых, и для произвольно направленных (полигональных) стен.
+            door_x_local = (d.x - p0[0]) * ux + (d.y - p0[1]) * uy
             room_b = fp.room(rb) if rb >= 0 else fp.room(ra)
             dname = f"Дверь {room_b.name}" if room_b and room_b.name else "Межкомнатная дверь"
             op, door = _add_door_to_wall(ifc, ctx, wall, door_x_local, d.width, door_height,

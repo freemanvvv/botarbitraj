@@ -503,7 +503,7 @@ class BimGenerateRequest(BaseModel):
 class ArchitectRequest(BaseModel):
     requirements: str
     model: str = "local-model"
-    floorplan_mode: str = "solver"  # "solver" | "neural" (LLM-планировка квартир, фаза 4)
+    floorplan_mode: str = "solver"  # "solver" | "neural" (LM Studio) | "chathousediffusion" (внешний CLI-мост)
 
 
 @app.post("/api/model/architect")
@@ -750,7 +750,7 @@ def model_architect(req: ArchitectRequest):
                 entrances=n_entrances,
                 apartments_per_landing=n_apt,
                 apartment_rooms=int(building_meta.get("apartment_rooms", 2) or 2),
-                floorplan_mode=req.floorplan_mode if req.floorplan_mode in ("solver", "neural") else "solver",
+                floorplan_mode=req.floorplan_mode if req.floorplan_mode in ("solver", "neural", "chathousediffusion") else "solver",
                 llm_model=req.model,
                 has_elevator=bool(building_meta.get("has_elevator", False)),
                 elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),

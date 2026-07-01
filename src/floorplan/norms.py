@@ -78,16 +78,16 @@ def validate_floorplan(fp: ApartmentFloorplan) -> list[dict]:
                 f"(КМК 2.08.01-89 п.3.1, световой коэффициент 1:8)."
             ))
 
-    # Проверка перекрытий (комнаты не должны пересекаться)
+    # Проверка перекрытий (комнаты не должны пересекаться). Для произвольных
+    # полигонов (ChatHouseDiffusion) пересечение bounding box'ов не означает
+    # пересечение самих фигур — используем точную геометрическую проверку.
+    from .geometry import polygons_intersect
     for i, a in enumerate(fp.rooms):
         for b in fp.rooms[i + 1:]:
-            ox = min(a.x1, b.x1) - max(a.x0, b.x0)
-            oy = min(a.y1, b.y1) - max(a.y0, b.y0)
-            if ox > 0.02 and oy > 0.02:
+            if polygons_intersect(a, b):
                 issues.append(_issue(
                     "error", a,
-                    f"Комната «{a.type}» пересекается с «{b.type}» "
-                    f"(наложение {ox:.2f}×{oy:.2f} м)."
+                    f"Комната «{a.type}» пересекается с «{b.type}»."
                 ))
 
     # Проверка, что комнаты не выходят за пределы footprint

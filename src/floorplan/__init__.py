@@ -10,9 +10,10 @@ from .solver import generate_floorplan
 from .norms import validate_floorplan, get_room_constraints
 from .to_ifc import floorplan_to_ifc
 from .neural import generate_floorplan_llm
+from .chathousediffusion_adapter import generate_floorplan_chd
 
 __all__ = [
     "ApartmentProgram", "RoomBox", "DoorSpec", "ApartmentFloorplan",
     "generate_floorplan", "validate_floorplan", "get_room_constraints",
-    "floorplan_to_ifc", "generate_floorplan_llm",
+    "floorplan_to_ifc", "generate_floorplan_llm", "generate_floorplan_chd",
 ]

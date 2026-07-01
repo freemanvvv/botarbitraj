@@ -96,7 +96,7 @@ export default function Modeling() {
   const [archModels, setArchModels] = useState<string[]>(["local-model"]);
   const [archModel, setArchModel] = useState("local-model");
   const [archIntegrity, setArchIntegrity] = useState<IntegrityResult | null>(null);
-  const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural">("solver");
+  const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural" | "chathousediffusion">("solver");
   const planInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
@@ -292,20 +292,30 @@ export default function Modeling() {
               {archModels.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: "0.8rem", color: "var(--text)", cursor: archLoading ? "default" : "pointer" }}>
-              <input
-                type="checkbox"
-                checked={archFloorplanMode === "neural"}
-                onChange={e => setArchFloorplanMode(e.target.checked ? "neural" : "solver")}
-                disabled={archLoading}
-                style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
-              />
-              🧠 ИИ-планировка квартир (экспериментально)
+            <label style={{ display: "block", marginBottom: 4, fontSize: "0.8rem", color: "var(--text)" }}>
+              Планировка квартир
             </label>
+            <select
+              value={archFloorplanMode}
+              onChange={e => setArchFloorplanMode(e.target.value as "solver" | "neural" | "chathousediffusion")}
+              disabled={archLoading}
+              style={{ width: "100%", padding: "8px 10px", marginBottom: 6, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: "0.83rem", fontFamily: "inherit" }}
+            >
+              <option value="solver">Детерминированный генератор (по умолчанию)</option>
+              <option value="neural">🧠 ИИ-планировка (локальная LLM, экспериментально)</option>
+              <option value="chathousediffusion">🏠 ChatHouseDiffusion (внешний CLI-мост, экспериментально)</option>
+            </select>
             {archFloorplanMode === "neural" && (
               <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginTop: -4, marginBottom: 10, lineHeight: 1.5 }}>
                 Планировку комнат внутри квартир расставит выбранная выше локальная модель.
                 Каждый вариант проверяется по нормам КМК; если модель ошиблась или недоступна —
+                автоматический откат на детерминированный генератор.
+              </p>
+            )}
+            {archFloorplanMode === "chathousediffusion" && (
+              <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginTop: -4, marginBottom: 10, lineHeight: 1.5 }}>
+                Требует отдельно развёрнутый ChatHouseDiffusion на сервере (см. chd_bridge/README.md) —
+                переменные окружения CHD_PYTHON/CHD_BRIDGE_SCRIPT. Если не настроено — тихий
                 автоматический откат на детерминированный генератор.
               </p>
             )}
