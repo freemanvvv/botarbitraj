@@ -9,12 +9,28 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import csv
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("construction_copilot")
+logging.basicConfig(level=logging.INFO)
+
+
+def _server_error(e: Exception, client_message: str) -> HTTPException:
+    """
+    Логирует полную трассировку на сервере и возвращает клиенту короткое
+    сообщение без внутренних путей/деталей реализации. Использовать вместо
+    `HTTPException(500, str(e))`, который дословно пересылает исключение
+    (включая абсолютные пути и внутренние детали библиотек) в ответ клиенту.
+    """
+    logger.exception(client_message)
+    return HTTPException(500, client_message)
+
 
 app = FastAPI(title="Construction AI Copilot")
 
@@ -274,7 +290,7 @@ def chat_endpoint(req: ChatRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка обработки запроса чата")
 
 
 @app.get("/api/chat/models")
@@ -308,14 +324,17 @@ def chat_status():
 # ═══════════════════════════════════════════
 
 class BuildingParams(BaseModel):
+    # Верхние границы — защита от случайного/намеренного запроса, который
+    # заставит генератор построить неограниченно большую IFC-модель (DoS
+    # через диск/память/CPU). Числа выбраны с запасом для реальных зданий.
     name: str = "Building"
-    length: float = 15.0
-    width: float = 12.0
-    height: float = 7.0
-    num_floors: int = 2
-    floor_height: float | None = None
-    wall_thickness: float = 0.4
-    slab_thickness: float = 0.2
+    length: float = Field(15.0, gt=0, le=500)
+    width: float = Field(12.0, gt=0, le=500)
+    height: float = Field(7.0, gt=0, le=500)
+    num_floors: int = Field(2, gt=0, le=120)
+    floor_height: float | None = Field(None, gt=0, le=10)
+    wall_thickness: float = Field(0.4, gt=0, le=2.0)
+    slab_thickness: float = Field(0.2, gt=0, le=1.0)
     roof_type: str = "gable"
     add_internal_walls: bool = True
     add_windows: bool = True
@@ -325,13 +344,13 @@ class BuildingParams(BaseModel):
     add_stairs: bool = True
     add_balconies: bool = False
     add_foundation: bool = True
-    windows_per_wall_long: int = 3
-    windows_per_wall_short: int = 2
-    window_width: float = 1.2
-    window_height: float = 1.5
-    window_sill: float = 0.9
-    door_width: float = 0.9
-    door_height: float = 2.1
+    windows_per_wall_long: int = Field(3, ge=0, le=50)
+    windows_per_wall_short: int = Field(2, ge=0, le=50)
+    window_width: float = Field(1.2, gt=0, le=10)
+    window_height: float = Field(1.5, gt=0, le=10)
+    window_sill: float = Field(0.9, ge=0, le=5)
+    door_width: float = Field(0.9, gt=0, le=5)
+    door_height: float = Field(2.1, gt=0, le=5)
 
 
 @app.post("/api/model/generate")
@@ -372,7 +391,7 @@ def model_generate(params: BuildingParams):
             "download_url": f"/api/model/download/{os.path.basename(path)}",
         }
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка генерации модели")
 
 
 @app.post("/api/model/analyze-image")
@@ -474,7 +493,7 @@ async def model_analyze_image(
         }
         return {"ok": True, "params": result_params}
     except Exception as e:
-        raise HTTPException(500, f"Ошибка анализа: {e}")
+        raise _server_error(e, "Ошибка анализа изображения")
 
 
 class BimGenerateRequest(BaseModel):
@@ -484,7 +503,7 @@ class BimGenerateRequest(BaseModel):
 class ArchitectRequest(BaseModel):
     requirements: str
     model: str = "local-model"
-    floorplan_mode: str = "solver"  # "solver" | "neural" (LLM-планировка квартир, фаза 4)
+    floorplan_mode: str = "solver"  # "solver" | "neural" (LM Studio) | "chathousediffusion" (внешний CLI-мост)
 
 
 @app.post("/api/model/architect")
@@ -715,6 +734,7 @@ def model_architect(req: ArchitectRequest):
         from src.normbase.validator import validate_and_fix_params, validate_building_meta
         building_type_str = data.get("building_type", "")
         building_params, norm_violations = validate_and_fix_params(building_params, building_type_str)
+        n_floors = int(building_params["num_floors"])  # используем уже подрезанное значение
         building_meta, building_violations = validate_building_meta(data.get("building", {}), n_floors)
         norm_violations = norm_violations + building_violations
 
@@ -730,7 +750,7 @@ def model_architect(req: ArchitectRequest):
                 entrances=n_entrances,
                 apartments_per_landing=n_apt,
                 apartment_rooms=int(building_meta.get("apartment_rooms", 2) or 2),
-                floorplan_mode=req.floorplan_mode if req.floorplan_mode in ("solver", "neural") else "solver",
+                floorplan_mode=req.floorplan_mode if req.floorplan_mode in ("solver", "neural", "chathousediffusion") else "solver",
                 llm_model=req.model,
                 has_elevator=bool(building_meta.get("has_elevator", False)),
                 elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),
@@ -790,9 +810,7 @@ def model_architect(req: ArchitectRequest):
             "download_url": f"/api/model/download/{os.path.basename(path)}",
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка работы AI-архитектора")
 
 
 # ─── MEP-раскладки (электрика, трубы, слаботочка) ─────────────────────────
@@ -901,9 +919,7 @@ def model_bim_generate(req: BimGenerateRequest):
             "download_url": f"/api/model/download/{os.path.basename(path)}",
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка генерации модели по описанию")
 
 
 @app.get("/api/model/download/{filename}")
@@ -948,7 +964,9 @@ def model_info(filename: str):
     """Информация об IFC-файле."""
     try:
         import ifcopenshell
-        filepath = OUTPUT_DIR / filename
+        filepath = (OUTPUT_DIR / filename).resolve()
+        if not filepath.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(400, "Недопустимое имя файла")
         if not filepath.exists():
             raise HTTPException(404, "Файл не найден")
         ifc = ifcopenshell.open(str(filepath))
@@ -964,8 +982,10 @@ def model_info(filename: str):
             "storeys": len(ifc.by_type("IfcBuildingStorey")),
             "materials": len(ifc.by_type("IfcMaterial")),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка чтения информации о модели")
 
 
 @app.get("/api/model/view/{filename}")
@@ -978,7 +998,9 @@ def model_view(filename: str):
         import ifcopenshell
         import ifcopenshell.geom
 
-        filepath = OUTPUT_DIR / filename
+        filepath = (OUTPUT_DIR / filename).resolve()
+        if not filepath.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(400, "Недопустимое имя файла")
         if not filepath.exists():
             raise HTTPException(404, "Файл не найден")
         ifc = ifcopenshell.open(str(filepath))
@@ -1040,8 +1062,10 @@ def model_view(filename: str):
                     pass
 
         return {"elements": geometry}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Ошибка чтения IFC: {e}")
+        raise _server_error(e, "Ошибка чтения геометрии модели")
 
 
 # ═══════════════════════════════════════════
@@ -1083,7 +1107,7 @@ async def gsplat_upload(
         start_job(job_id)
         return {"job_id": job_id, "message": "Пайплайн запущен"}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка запуска пайплайна 3D-реконструкции")
 
 
 @app.get("/api/gsplat/jobs")
@@ -1097,7 +1121,7 @@ def gsplat_jobs():
             for j in jobs
         ]}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка получения списка задач")
 
 
 @app.get("/api/gsplat/jobs/{job_id}")
@@ -1124,7 +1148,7 @@ def gsplat_job_status(job_id: str, log_offset: int = Query(0)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка получения статуса задачи")
 
 
 @app.get("/api/gsplat/models")
@@ -1134,7 +1158,7 @@ def gsplat_models():
         from src.gsplat_pipeline import list_models
         return {"models": list_models()}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка получения списка моделей")
 
 
 @app.get("/api/gsplat/ply/{job_id}/{filename}")
@@ -1157,7 +1181,7 @@ def gsplat_serve_ply(job_id: str, filename: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка выдачи файла модели")
 
 
 @app.post("/api/gsplat/upload-ply")
@@ -1174,7 +1198,8 @@ async def gsplat_upload_ply(
         job_id = str(uuid.uuid4())[:8]
         job_dir = GSPLAT_DATA_DIR / job_id
         job_dir.mkdir(parents=True)
-        ply_path = job_dir / "output" / file.filename
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in Path(file.filename).name)
+        ply_path = job_dir / "output" / safe_name
         ply_path.parent.mkdir(exist_ok=True)
         with open(ply_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -1199,7 +1224,161 @@ async def gsplat_upload_ply(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка загрузки PLY-файла")
+
+
+# ═══════════════════════════════════════════
+#  ВКЛАДКА 5 — СМЕТЫ (BOQ)
+# ═══════════════════════════════════════════
+
+class EstimateGenerateRequest(BaseModel):
+    description: str
+    model: str = "local-model"
+
+
+class PriceEntryCreate(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    unit: str = Field(..., min_length=1, max_length=20)
+    price: float = Field(..., ge=0, le=1_000_000_000)
+    category: str = Field("", max_length=100)
+    region: str = Field("Ташкент", max_length=100)
+
+
+@app.post("/api/estimate/generate")
+def estimate_generate(req: EstimateGenerateRequest):
+    """
+    LLM структурирует состав работ/материалов по описанию объекта →
+    парсинг в позиции (кодом) → расчёт по базе расценок (кодом, не LLM) →
+    сохранение сметы в SQLite.
+    """
+    if not req.description.strip():
+        raise HTTPException(400, "description is required")
+
+    from src.config import LM_STUDIO_BASE_URL
+    from src.estimate_engine import parse_boq_from_llm, calculate_estimate
+    import requests as req_lib
+
+    sys_prompt = (
+        "Ты — сметчик по строительству в Узбекистане. "
+        "Структурируй состав работ и материалов для указанного объекта. "
+        "Выдай строго в формате Markdown-таблицы без лишнего текста.\n\n"
+        "## Ведомость работ\n"
+        "| № | Наименование | Ед. изм. | Кол-во |\n"
+        "|---|---|---|---|\n"
+        "| 1 | Название материала/работы | м3 | 12 |\n\n"
+        "ВАЖНО: используй только точные числа, не диапазоны. "
+        "Единицы измерения: м3, м2, м, шт, точка, мешок, т, кг. "
+        "Не указывай цены — только объёмы. Не добавляй пояснений и примечаний."
+    )
+
+    try:
+        resp = req_lib.post(
+            f"{LM_STUDIO_BASE_URL}/chat/completions",
+            json={
+                "model": req.model,
+                "messages": [
+                    {"role": "system", "content": sys_prompt},
+                    {"role": "user", "content": req.description},
+                ],
+                "temperature": 0.1,
+                "max_tokens": 1500,
+            },
+            timeout=120,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+    except Exception as e:
+        raise _server_error(e, "Ошибка обращения к локальной модели")
+
+    items = parse_boq_from_llm(raw)
+    if not items:
+        raise HTTPException(422, "Не удалось распознать состав работ в ответе модели")
+
+    # Инженерный предел — та же защита от DoS, что и в build-параметрах:
+    # не даём одной LLM-генерацией создать неограниченную смету.
+    MAX_ITEMS = 300
+    if len(items) > MAX_ITEMS:
+        items = items[:MAX_ITEMS]
+
+    estimate = calculate_estimate(f"Смета: {req.description[:60]}", items)
+    estimate["raw_llm_response"] = raw
+    return estimate
+
+
+@app.get("/api/estimate/{estimate_id}")
+def estimate_get(estimate_id: int):
+    from src.pricing_db import get_estimate
+    estimate = get_estimate(estimate_id)
+    if not estimate:
+        raise HTTPException(404, "Смета не найдена")
+    return estimate
+
+
+@app.get("/api/estimate/{estimate_id}/export/{fmt}")
+def estimate_export(estimate_id: int, fmt: str):
+    """Экспорт сметы в xlsx или pdf."""
+    if fmt not in ("xlsx", "pdf"):
+        raise HTTPException(400, "Формат должен быть xlsx или pdf")
+
+    from src.pricing_db import get_estimate
+    raw = get_estimate(estimate_id)
+    if not raw:
+        raise HTTPException(404, "Смета не найдена")
+
+    # calculate_estimate()'s item shape (type/name/unit/quantity/unit_price/total)
+    # отличается от сырых строк estimate_items в БД — приводим к нему для экспорта.
+    estimate_data = {
+        "project_name": raw["project_name"],
+        "items": [
+            {
+                "type": it["item_type"],
+                "name": it["item_name"],
+                "unit": it["unit"],
+                "quantity": it["quantity"],
+                "unit_price": it["unit_price"],
+                "total": it["total_price"],
+            }
+            for it in raw["items"]
+        ],
+        "total_materials": raw["total_materials"],
+        "total_work": raw["total_work"],
+        "total": raw["total_overall"],
+    }
+
+    try:
+        from src.estimate_engine import export_to_xlsx, export_to_pdf
+        path = export_to_xlsx(estimate_data) if fmt == "xlsx" else export_to_pdf(estimate_data)
+    except Exception as e:
+        raise _server_error(e, "Ошибка экспорта сметы")
+
+    media = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet" if fmt == "xlsx" else "application/pdf"
+    return FileResponse(path, media_type=media, filename=os.path.basename(path))
+
+
+@app.get("/api/pricing/materials")
+def pricing_materials(q: Optional[str] = Query(None)):
+    from src.pricing_db import search_materials, list_all_materials
+    return {"materials": search_materials(q, limit=100) if q else list_all_materials()}
+
+
+@app.get("/api/pricing/work")
+def pricing_work(q: Optional[str] = Query(None)):
+    from src.pricing_db import search_work, list_all_work
+    return {"work": search_work(q, limit=100) if q else list_all_work()}
+
+
+@app.post("/api/pricing/materials")
+def pricing_add_material(entry: PriceEntryCreate):
+    from src.pricing_db import add_material
+    row_id = add_material(entry.name, entry.unit, entry.price, entry.category, entry.region)
+    return {"id": row_id, "ok": True}
+
+
+@app.post("/api/pricing/work")
+def pricing_add_work(entry: PriceEntryCreate):
+    from src.pricing_db import add_work
+    row_id = add_work(entry.name, entry.unit, entry.price, entry.category, entry.region)
+    return {"id": row_id, "ok": True}
 
 
 # ─── Здоровье ───

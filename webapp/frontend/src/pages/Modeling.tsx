@@ -118,7 +118,7 @@ export default function Modeling() {
   const [archModels, setArchModels] = useState<string[]>(["local-model"]);
   const [archModel, setArchModel] = useState("local-model");
   const [archIntegrity, setArchIntegrity] = useState<IntegrityResult | null>(null);
-  const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural">("solver");
+  const [archFloorplanMode, setArchFloorplanMode] = useState<"solver" | "neural" | "chathousediffusion">("solver");
   const [mepLoading, setMepLoading] = useState(false);
   const [mepData, setMepData] = useState<MepResponse | null>(null);
   const [mepExpanded, setMepExpanded] = useState<string | null>(null);
@@ -276,8 +276,6 @@ export default function Modeling() {
     finally { setArchLoading(false); }
   };
 
-  const fmt = (ts: number) => new Date(ts * 1000).toLocaleString().slice(0, -3);
-
   const Label = ({ children }: { children: React.ReactNode }) => (
     <label style={{ display: "block", marginBottom: 13, fontSize: "0.78rem", color: "var(--text2)", fontWeight: 500, textTransform: "uppercase", letterSpacing: "0.06em" }}>
       {children}
@@ -308,7 +306,7 @@ export default function Modeling() {
             ["arch",   "🏛 Архитектор"],
             ["create", "Параметры"],
             ["plan",   "📐 По плану"],
-            ["nl",     "🤖 По описанию"],
+            ["nl",     "🤖 Быстрый эскиз"],
             ["view",   "Просмотр"],
             ["mep",    "🔌 Инженерка"],
           ] as [Tab, string][]).map(([k, l]) => (
@@ -324,8 +322,12 @@ export default function Modeling() {
           {/* ══ AI АРХИТЕКТОР ══ */}
           {tab === "arch" && (<>
             <h3 style={{ marginBottom: 6, color: "var(--accent)" }}>🏛 AI Архитектор</h3>
-            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 10, lineHeight: 1.6 }}>
-              Опиши требования — LLM изучит нормы КМК/ШНК, составит план с обоснованием, затем сгенерирует IFC.
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 4, lineHeight: 1.6 }}>
+              Опиши требования — LLM изучит нормы КМК/ШНК, составит план по этапам строительства с обоснованием,
+              проверит здание по нормам и целостности, затем сгенерирует IFC.
+            </p>
+            <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginBottom: 10 }}>
+              Дольше «Быстрого эскиза», но результат соответствует нормам — для реального проекта.
             </p>
 
             <Label>Локальная модель ИИ</Label>
@@ -338,20 +340,30 @@ export default function Modeling() {
               {archModels.map(m => <option key={m} value={m}>{m}</option>)}
             </select>
 
-            <label style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 10, fontSize: "0.8rem", color: "var(--text)", cursor: archLoading ? "default" : "pointer" }}>
-              <input
-                type="checkbox"
-                checked={archFloorplanMode === "neural"}
-                onChange={e => setArchFloorplanMode(e.target.checked ? "neural" : "solver")}
-                disabled={archLoading}
-                style={{ accentColor: "var(--accent)", width: 15, height: 15 }}
-              />
-              🧠 ИИ-планировка квартир (экспериментально)
+            <label style={{ display: "block", marginBottom: 4, fontSize: "0.8rem", color: "var(--text)" }}>
+              Планировка квартир
             </label>
+            <select
+              value={archFloorplanMode}
+              onChange={e => setArchFloorplanMode(e.target.value as "solver" | "neural" | "chathousediffusion")}
+              disabled={archLoading}
+              style={{ width: "100%", padding: "8px 10px", marginBottom: 6, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", fontSize: "0.83rem", fontFamily: "inherit" }}
+            >
+              <option value="solver">Детерминированный генератор (по умолчанию)</option>
+              <option value="neural">🧠 ИИ-планировка (локальная LLM, экспериментально)</option>
+              <option value="chathousediffusion">🏠 ChatHouseDiffusion (внешний CLI-мост, экспериментально)</option>
+            </select>
             {archFloorplanMode === "neural" && (
               <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginTop: -4, marginBottom: 10, lineHeight: 1.5 }}>
                 Планировку комнат внутри квартир расставит выбранная выше локальная модель.
                 Каждый вариант проверяется по нормам КМК; если модель ошиблась или недоступна —
+                автоматический откат на детерминированный генератор.
+              </p>
+            )}
+            {archFloorplanMode === "chathousediffusion" && (
+              <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginTop: -4, marginBottom: 10, lineHeight: 1.5 }}>
+                Требует отдельно развёрнутый ChatHouseDiffusion на сервере (см. chd_bridge/README.md) —
+                переменные окружения CHD_PYTHON/CHD_BRIDGE_SCRIPT. Если не настроено — тихий
                 автоматический откат на детерминированный генератор.
               </p>
             )}
@@ -381,7 +393,7 @@ export default function Modeling() {
                   ["norms",      "📚 Изучение норм КМК/ШНК Узбекистана..."],
                   ["planning",   "📐 Составление плана здания по нормам..."],
                   ["generating", "🏗 Генерация IFC-модели..."],
-                ] as [typeof archStep, string][]).map(([step, label], i) => {
+                ] as [typeof archStep, string][]).map(([step, label]) => {
                   const steps = ["norms","planning","generating","done"];
                   const current = steps.indexOf(archStep);
                   const mine = steps.indexOf(step);
@@ -680,12 +692,18 @@ export default function Modeling() {
             </div>
           </>)}
 
-          {/* ══ ПО ОПИСАНИЮ ══ */}
+          {/* ══ БЫСТРЫЙ ЭСКИЗ ══ */}
           {tab === "nl" && (<>
-            <h3 style={{ marginBottom: 8, color: "var(--accent)" }}>🤖 Модель по описанию</h3>
-            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 12, lineHeight: 1.6 }}>
-              Опиши здание текстом — AI распарсит и создаст IFC через BIM-пайплайн.
+            <h3 style={{ marginBottom: 8, color: "var(--accent)" }}>🤖 Быстрый эскиз по описанию</h3>
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 8, lineHeight: 1.6 }}>
+              Опиши здание текстом — свободная планировка комнат за секунды, без обращения к базе норм.
+              Подходит для черновика/визуализации идеи.
             </p>
+            <div style={{ padding: "8px 12px", marginBottom: 12, background: "rgba(255,159,10,0.08)", border: "1px solid rgba(255,159,10,0.25)", borderRadius: 8, fontSize: "0.75rem", color: "var(--text)", lineHeight: 1.6 }}>
+              ⚠️ Этот режим <b>не проверяет</b> здание по КМК/ШНК и не считает целостность модели.
+              Для реального проекта (толщина стен, лифты по нормам, планировка квартир) используйте
+              вкладку «🏛 Архитектор».
+            </div>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
@@ -693,7 +711,7 @@ export default function Modeling() {
               style={{ width: "100%", height: 130, padding: 10, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", resize: "vertical", fontSize: "0.85rem", fontFamily: "inherit" }}
             />
             <button className="btn-gen" onClick={generateFromDesc} disabled={nlLoading || !description.trim()} style={{ marginTop: 10 }}>
-              {nlLoading ? "⏳ Парсинг..." : "🤖 Сгенерировать из описания"}
+              {nlLoading ? "⏳ Парсинг..." : "🤖 Сгенерировать эскиз"}
             </button>
           </>)}
 

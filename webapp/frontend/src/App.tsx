@@ -1,11 +1,13 @@
 import { useState } from "react";
+import type { JSX } from "react";
 import Archive from "./pages/Archive";
 import ChatTab from "./pages/ChatTab";
 import Modeling from "./pages/Modeling";
 import GsplatTab from "./pages/GsplatTab";
+import Estimate from "./pages/Estimate";
 import "./App.css";
 
-type Tab = "archive" | "chat" | "modeling" | "gsplat";
+type Tab = "archive" | "chat" | "modeling" | "gsplat" | "estimate";
 
 const IconArchive = () => (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
@@ -46,10 +48,18 @@ const IconGsplat = () => (
   </svg>
 );
 
+const IconEstimate = () => (
+  <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="5" y="3" width="14" height="18" rx="2" />
+    <path d="M9 7h6M9 11h6M9 15h3" />
+  </svg>
+);
+
 const TABS: { key: Tab; label: string; Icon: () => JSX.Element }[] = [
   { key: "archive",  label: "Архив",          Icon: IconArchive  },
   { key: "chat",     label: "Чат с ботом",    Icon: IconChat     },
   { key: "modeling", label: "Моделирование",  Icon: IconModeling },
+  { key: "estimate", label: "Сметы",          Icon: IconEstimate },
   { key: "gsplat",   label: "3D-карты",       Icon: IconGsplat   },
 ];
 
@@ -79,6 +89,7 @@ export default function App() {
         {activeTab === "archive"  && <Archive />}
         {activeTab === "chat"     && <ChatTab />}
         {activeTab === "modeling" && <Modeling />}
+        {activeTab === "estimate" && <Estimate />}
         {activeTab === "gsplat"   && <GsplatTab />}
       </main>
     </div>

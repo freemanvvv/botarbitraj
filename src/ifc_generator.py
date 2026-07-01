@@ -68,6 +68,16 @@ def _triangle_profile(ifc, w, h):
     poly = ifc.create_entity("IfcPolyline", pts)
     return ifc.create_entity("IfcArbitraryClosedProfileDef", "AREA", None, poly)
 
+def _polygon_profile(ifc, points):
+    """Произвольный замкнутый профиль по списку 2D-точек [(x,y), ...] —
+    для комнат с непрямоугольным контуром (напр. после векторизации растра
+    ChatHouseDiffusion — см. src/floorplan/vectorize.py)."""
+    pts = [_cp2(ifc, x, y) for x, y in points]
+    if pts[0] != pts[-1]:
+        pts = pts + [pts[0]]
+    poly = ifc.create_entity("IfcPolyline", pts)
+    return ifc.create_entity("IfcArbitraryClosedProfileDef", "AREA", None, poly)
+
 def _extrude(ifc, profile, depth, dir_vec=None):
     d = dir_vec or _d3(ifc, 0, 0, 1)
     pos = ifc.create_entity("IfcAxis2Placement3D",
@@ -821,6 +831,12 @@ def create_apartment_building(
     # RAG-проверка по нормам решает, принять её или откатиться на
     # детерминированный солвер. Если LLM недоступна/вернула мусор — тихий
     # и безопасный fallback на generate_floorplan(), здание всегда соберётся.
+    #
+    # floorplan_mode="chathousediffusion": планировку пытается сгенерировать
+    # ChatHouseDiffusion в отдельном пользовательском окружении (мост —
+    # src/floorplan/chathousediffusion_adapter.py, см. его докстринг про
+    # subprocess-архитектуру и CHD_PYTHON/CHD_BRIDGE_SCRIPT). Тот же
+    # fallback-контракт: None → детерминированный солвер.
     apt_inner_depth = max(1.0, width - 2 * wt)
     floorplan_sources = {}
     if floorplan_mode == "neural":
@@ -833,6 +849,16 @@ def create_apartment_building(
         fp_east = generate_floorplan_llm(width=apt_width, depth=apt_inner_depth,
                                           room_count=apartment_rooms, entry_side="east",
                                           model=llm_model) or \
+            generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                room_count=apartment_rooms, entry_side="east")
+    elif floorplan_mode == "chathousediffusion":
+        from .floorplan import generate_floorplan_chd
+        fp_west = generate_floorplan_chd(width=apt_width, depth=apt_inner_depth,
+                                          room_count=apartment_rooms, entry_side="west") or \
+            generate_floorplan(width=apt_width, depth=apt_inner_depth,
+                                room_count=apartment_rooms, entry_side="west")
+        fp_east = generate_floorplan_chd(width=apt_width, depth=apt_inner_depth,
+                                          room_count=apartment_rooms, entry_side="east") or \
             generate_floorplan(width=apt_width, depth=apt_inner_depth,
                                 room_count=apartment_rooms, entry_side="east")
     else:

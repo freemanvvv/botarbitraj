@@ -1,3 +1,7 @@
+fastapi>=0.115,<1.0
+uvicorn>=0.30,<1.0
+pydantic>=2.9,<3.0
+python-multipart>=0.0.9,<1.0
 requests>=2.31,<3.0
 openai>=1.0,<2.0
 chromadb>=1.5,<2.0
@@ -9,3 +13,9 @@ weasyprint>=60,<70
 openpyxl>=3.1,<4.0
 ifcopenshell>=0.8,<1.0
 ezdxf>=1.4,<2.0
+PyMuPDF>=1.24,<2.0
+pytesseract>=0.3.10,<0.4
+Pillow>=10.0,<13.0
+beautifulsoup4>=4.12,<5.0
+opencv-python-headless>=4.9,<5.0
+shapely>=2.0,<3.0

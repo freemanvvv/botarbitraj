@@ -75,10 +75,11 @@ export default function ThreeViewer({ filename }: Props) {
     scene.add(new THREE.Line(zGeo, zMat));
 
     // Метки осей (X, Y, Z)
-    function makeLabel(text, x, y, z, color) {
+    function makeLabel(text: string, x: number, y: number, z: number, color: string) {
       const canvas = document.createElement('canvas');
       canvas.width = 64; canvas.height = 64;
       const ctx = canvas.getContext('2d');
+      if (!ctx) return;
       ctx.fillStyle = 'transparent'; ctx.fillRect(0, 0, 64, 64);
       ctx.font = 'bold 48px system-ui';
       ctx.textAlign = 'center'; ctx.textBaseline = 'middle';

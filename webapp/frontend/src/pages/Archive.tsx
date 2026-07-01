@@ -9,6 +9,7 @@ interface Doc {
   language: string;
   status: string;
   source_url: string;
+  superseded_by?: string;
 }
 
 interface Group {
