@@ -259,7 +259,7 @@ export default function Modeling() {
             ["arch",   "🏛 Архитектор"],
             ["create", "Параметры"],
             ["plan",   "📐 По плану"],
-            ["nl",     "🤖 По описанию"],
+            ["nl",     "🤖 Быстрый эскиз"],
             ["view",   "Просмотр"],
           ] as [Tab, string][]).map(([k, l]) => (
             <button key={k} className={`toggle-btn ${tab === k ? "active" : ""}`} onClick={() => setTab(k)}>{l}</button>
@@ -274,8 +274,12 @@ export default function Modeling() {
           {/* ══ AI АРХИТЕКТОР ══ */}
           {tab === "arch" && (<>
             <h3 style={{ marginBottom: 6, color: "var(--accent)" }}>🏛 AI Архитектор</h3>
-            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 10, lineHeight: 1.6 }}>
-              Опиши требования — LLM изучит нормы КМК/ШНК, составит план с обоснованием, затем сгенерирует IFC.
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 4, lineHeight: 1.6 }}>
+              Опиши требования — LLM изучит нормы КМК/ШНК, составит план по этапам строительства с обоснованием,
+              проверит здание по нормам и целостности, затем сгенерирует IFC.
+            </p>
+            <p style={{ fontSize: "0.72rem", color: "var(--text3)", marginBottom: 10 }}>
+              Дольше «Быстрого эскиза», но результат соответствует нормам — для реального проекта.
             </p>
 
             <Label>Локальная модель ИИ</Label>
@@ -630,12 +634,18 @@ export default function Modeling() {
             </div>
           </>)}
 
-          {/* ══ ПО ОПИСАНИЮ ══ */}
+          {/* ══ БЫСТРЫЙ ЭСКИЗ ══ */}
           {tab === "nl" && (<>
-            <h3 style={{ marginBottom: 8, color: "var(--accent)" }}>🤖 Модель по описанию</h3>
-            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 12, lineHeight: 1.6 }}>
-              Опиши здание текстом — AI распарсит и создаст IFC через BIM-пайплайн.
+            <h3 style={{ marginBottom: 8, color: "var(--accent)" }}>🤖 Быстрый эскиз по описанию</h3>
+            <p style={{ fontSize: "0.78rem", color: "var(--text2)", marginBottom: 8, lineHeight: 1.6 }}>
+              Опиши здание текстом — свободная планировка комнат за секунды, без обращения к базе норм.
+              Подходит для черновика/визуализации идеи.
             </p>
+            <div style={{ padding: "8px 12px", marginBottom: 12, background: "rgba(255,159,10,0.08)", border: "1px solid rgba(255,159,10,0.25)", borderRadius: 8, fontSize: "0.75rem", color: "var(--text)", lineHeight: 1.6 }}>
+              ⚠️ Этот режим <b>не проверяет</b> здание по КМК/ШНК и не считает целостность модели.
+              Для реального проекта (толщина стен, лифты по нормам, планировка квартир) используйте
+              вкладку «🏛 Архитектор».
+            </div>
             <textarea
               value={description}
               onChange={e => setDescription(e.target.value)}
@@ -643,7 +653,7 @@ export default function Modeling() {
               style={{ width: "100%", height: 130, padding: 10, background: "var(--bg2)", border: "1px solid var(--border)", borderRadius: 8, color: "var(--text)", resize: "vertical", fontSize: "0.85rem", fontFamily: "inherit" }}
             />
             <button className="btn-gen" onClick={generateFromDesc} disabled={nlLoading || !description.trim()} style={{ marginTop: 10 }}>
-              {nlLoading ? "⏳ Парсинг..." : "🤖 Сгенерировать из описания"}
+              {nlLoading ? "⏳ Парсинг..." : "🤖 Сгенерировать эскиз"}
             </button>
           </>)}
 
