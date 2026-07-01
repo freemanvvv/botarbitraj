@@ -461,7 +461,8 @@ body {
   accent-color: var(--accent);
 }
 
-.modeling-params .btn-gen {
+.btn-gen {
+  display: inline-block;
   width: 100%;
   padding: 12px;
   background: var(--accent);
@@ -475,10 +476,12 @@ body {
   font-family: inherit;
   letter-spacing: -0.01em;
   transition: opacity 0.15s;
+  box-sizing: border-box;
 }
 
-.modeling-params .btn-gen:hover { opacity: 0.85; }
-.modeling-params .btn-gen:active { opacity: 0.75; }
+.btn-gen:hover { opacity: 0.85; }
+.btn-gen:active { opacity: 0.75; }
+.btn-gen:disabled { opacity: 0.5; cursor: not-allowed; }
 
 .modeling-viewer {
   background: var(--bg1);
