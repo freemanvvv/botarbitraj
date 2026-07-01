@@ -9,3 +9,7 @@ weasyprint>=60,<70
 openpyxl>=3.1,<4.0
 ifcopenshell>=0.8,<1.0
 ezdxf>=1.4,<2.0
+PyMuPDF>=1.24,<2.0
+pytesseract>=0.3.10,<0.4
+Pillow>=10.0,<13.0
+beautifulsoup4>=4.12,<5.0

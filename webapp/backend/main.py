@@ -9,12 +9,28 @@ from fastapi import FastAPI, HTTPException, Query, UploadFile, File, Form
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse, FileResponse
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import csv
 import json
+import logging
 import shutil
 from pathlib import Path
 from typing import Optional
+
+logger = logging.getLogger("construction_copilot")
+logging.basicConfig(level=logging.INFO)
+
+
+def _server_error(e: Exception, client_message: str) -> HTTPException:
+    """
+    Логирует полную трассировку на сервере и возвращает клиенту короткое
+    сообщение без внутренних путей/деталей реализации. Использовать вместо
+    `HTTPException(500, str(e))`, который дословно пересылает исключение
+    (включая абсолютные пути и внутренние детали библиотек) в ответ клиенту.
+    """
+    logger.exception(client_message)
+    return HTTPException(500, client_message)
+
 
 app = FastAPI(title="Construction AI Copilot")
 
@@ -274,7 +290,7 @@ def chat_endpoint(req: ChatRequest):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка обработки запроса чата")
 
 
 @app.get("/api/chat/models")
@@ -308,14 +324,17 @@ def chat_status():
 # ═══════════════════════════════════════════
 
 class BuildingParams(BaseModel):
+    # Верхние границы — защита от случайного/намеренного запроса, который
+    # заставит генератор построить неограниченно большую IFC-модель (DoS
+    # через диск/память/CPU). Числа выбраны с запасом для реальных зданий.
     name: str = "Building"
-    length: float = 15.0
-    width: float = 12.0
-    height: float = 7.0
-    num_floors: int = 2
-    floor_height: float | None = None
-    wall_thickness: float = 0.4
-    slab_thickness: float = 0.2
+    length: float = Field(15.0, gt=0, le=500)
+    width: float = Field(12.0, gt=0, le=500)
+    height: float = Field(7.0, gt=0, le=500)
+    num_floors: int = Field(2, gt=0, le=120)
+    floor_height: float | None = Field(None, gt=0, le=10)
+    wall_thickness: float = Field(0.4, gt=0, le=2.0)
+    slab_thickness: float = Field(0.2, gt=0, le=1.0)
     roof_type: str = "gable"
     add_internal_walls: bool = True
     add_windows: bool = True
@@ -325,13 +344,13 @@ class BuildingParams(BaseModel):
     add_stairs: bool = True
     add_balconies: bool = False
     add_foundation: bool = True
-    windows_per_wall_long: int = 3
-    windows_per_wall_short: int = 2
-    window_width: float = 1.2
-    window_height: float = 1.5
-    window_sill: float = 0.9
-    door_width: float = 0.9
-    door_height: float = 2.1
+    windows_per_wall_long: int = Field(3, ge=0, le=50)
+    windows_per_wall_short: int = Field(2, ge=0, le=50)
+    window_width: float = Field(1.2, gt=0, le=10)
+    window_height: float = Field(1.5, gt=0, le=10)
+    window_sill: float = Field(0.9, ge=0, le=5)
+    door_width: float = Field(0.9, gt=0, le=5)
+    door_height: float = Field(2.1, gt=0, le=5)
 
 
 @app.post("/api/model/generate")
@@ -372,7 +391,7 @@ def model_generate(params: BuildingParams):
             "download_url": f"/api/model/download/{os.path.basename(path)}",
         }
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка генерации модели")
 
 
 @app.post("/api/model/analyze-image")
@@ -474,7 +493,7 @@ async def model_analyze_image(
         }
         return {"ok": True, "params": result_params}
     except Exception as e:
-        raise HTTPException(500, f"Ошибка анализа: {e}")
+        raise _server_error(e, "Ошибка анализа изображения")
 
 
 class BimGenerateRequest(BaseModel):
@@ -715,6 +734,7 @@ def model_architect(req: ArchitectRequest):
         from src.normbase.validator import validate_and_fix_params, validate_building_meta
         building_type_str = data.get("building_type", "")
         building_params, norm_violations = validate_and_fix_params(building_params, building_type_str)
+        n_floors = int(building_params["num_floors"])  # используем уже подрезанное значение
         building_meta, building_violations = validate_building_meta(data.get("building", {}), n_floors)
         norm_violations = norm_violations + building_violations
 
@@ -790,9 +810,7 @@ def model_architect(req: ArchitectRequest):
             "download_url": f"/api/model/download/{os.path.basename(path)}",
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка работы AI-архитектора")
 
 
 @app.post("/api/model/bim-generate")
@@ -811,9 +829,7 @@ def model_bim_generate(req: BimGenerateRequest):
             "download_url": f"/api/model/download/{os.path.basename(path)}",
         }
     except Exception as e:
-        import traceback
-        traceback.print_exc()
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка генерации модели по описанию")
 
 
 @app.get("/api/model/download/{filename}")
@@ -858,7 +874,9 @@ def model_info(filename: str):
     """Информация об IFC-файле."""
     try:
         import ifcopenshell
-        filepath = OUTPUT_DIR / filename
+        filepath = (OUTPUT_DIR / filename).resolve()
+        if not filepath.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(400, "Недопустимое имя файла")
         if not filepath.exists():
             raise HTTPException(404, "Файл не найден")
         ifc = ifcopenshell.open(str(filepath))
@@ -874,8 +892,10 @@ def model_info(filename: str):
             "storeys": len(ifc.by_type("IfcBuildingStorey")),
             "materials": len(ifc.by_type("IfcMaterial")),
         }
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка чтения информации о модели")
 
 
 @app.get("/api/model/view/{filename}")
@@ -888,7 +908,9 @@ def model_view(filename: str):
         import ifcopenshell
         import ifcopenshell.geom
 
-        filepath = OUTPUT_DIR / filename
+        filepath = (OUTPUT_DIR / filename).resolve()
+        if not filepath.is_relative_to(OUTPUT_DIR.resolve()):
+            raise HTTPException(400, "Недопустимое имя файла")
         if not filepath.exists():
             raise HTTPException(404, "Файл не найден")
         ifc = ifcopenshell.open(str(filepath))
@@ -950,8 +972,10 @@ def model_view(filename: str):
                     pass
 
         return {"elements": geometry}
+    except HTTPException:
+        raise
     except Exception as e:
-        raise HTTPException(500, f"Ошибка чтения IFC: {e}")
+        raise _server_error(e, "Ошибка чтения геометрии модели")
 
 
 # ═══════════════════════════════════════════
@@ -993,7 +1017,7 @@ async def gsplat_upload(
         start_job(job_id)
         return {"job_id": job_id, "message": "Пайплайн запущен"}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка запуска пайплайна 3D-реконструкции")
 
 
 @app.get("/api/gsplat/jobs")
@@ -1007,7 +1031,7 @@ def gsplat_jobs():
             for j in jobs
         ]}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка получения списка задач")
 
 
 @app.get("/api/gsplat/jobs/{job_id}")
@@ -1034,7 +1058,7 @@ def gsplat_job_status(job_id: str, log_offset: int = Query(0)):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка получения статуса задачи")
 
 
 @app.get("/api/gsplat/models")
@@ -1044,7 +1068,7 @@ def gsplat_models():
         from src.gsplat_pipeline import list_models
         return {"models": list_models()}
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка получения списка моделей")
 
 
 @app.get("/api/gsplat/ply/{job_id}/{filename}")
@@ -1067,7 +1091,7 @@ def gsplat_serve_ply(job_id: str, filename: str):
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка выдачи файла модели")
 
 
 @app.post("/api/gsplat/upload-ply")
@@ -1084,7 +1108,8 @@ async def gsplat_upload_ply(
         job_id = str(uuid.uuid4())[:8]
         job_dir = GSPLAT_DATA_DIR / job_id
         job_dir.mkdir(parents=True)
-        ply_path = job_dir / "output" / file.filename
+        safe_name = "".join(c if c.isalnum() or c in "._-" else "_" for c in Path(file.filename).name)
+        ply_path = job_dir / "output" / safe_name
         ply_path.parent.mkdir(exist_ok=True)
         with open(ply_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
@@ -1109,7 +1134,7 @@ async def gsplat_upload_ply(
     except HTTPException:
         raise
     except Exception as e:
-        raise HTTPException(500, str(e))
+        raise _server_error(e, "Ошибка загрузки PLY-файла")
 
 
 # ─── Здоровье ───

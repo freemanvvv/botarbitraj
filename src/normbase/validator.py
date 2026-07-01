@@ -30,6 +30,29 @@ def validate_and_fix_params(params: dict, building_type: str = "") -> tuple[dict
     p = dict(params)
     notes: list[str] = []
     btype = _classify(building_type)
+
+    # Инженерные пределы (не норматив) — параметры приходят из JSON, который
+    # написала LLM, и могут быть аномально большими (случайно или намеренно).
+    # Без верхней границы это превращается в DoS: генератор честно попытается
+    # построить здание в сотни этажей/километр длиной.
+    caps = {
+        "num_floors": 120, "length": 500.0, "width": 500.0,
+        "wall_thickness": 2.0, "slab_thickness": 1.0,
+        "windows_per_wall_long": 50, "windows_per_wall_short": 50,
+        "window_width": 10.0, "window_height": 10.0,
+        "door_width": 5.0, "door_height": 5.0,
+    }
+    for key, cap in caps.items():
+        val = p.get(key)
+        if val is not None and val > cap:
+            notes.append(f"Параметр «{key}»={val} превышает разумный предел {cap} — уменьшен до {cap}.")
+            p[key] = cap
+    if p.get("num_floors") and p.get("height"):
+        # height обычно = floor_height * num_floors — пересчитываем после клампа этажности
+        max_reasonable_height = caps["num_floors"] * 10.0  # ≤10 м на этаж
+        if p["height"] > max_reasonable_height:
+            p["height"] = max_reasonable_height
+
     n_floors = int(p.get("num_floors", 2))
 
     # КМК 2.08.01-89 п.2.1 / КМК 2.09.04 п.1.4 — высота этажа
@@ -123,6 +146,21 @@ def validate_building_meta(building: dict, num_floors: int) -> tuple[dict, list[
     """
     b = dict(building or {})
     notes: list[str] = []
+
+    # Инженерные пределы (не норматив) — те же соображения, что и в
+    # validate_and_fix_params: entrances/apartments_per_landing/
+    # apartment_rooms/elevators_per_entrance приходят из JSON LLM без
+    # проверки Pydantic и напрямую умножаются в create_apartment_building
+    # (кол-во квартир = entrances × apartments_per_landing × num_floors).
+    meta_caps = {
+        "entrances": 20, "apartments_per_landing": 8,
+        "apartment_rooms": 6, "elevators_per_entrance": 4,
+    }
+    for key, cap in meta_caps.items():
+        val = b.get(key)
+        if val is not None and val > cap:
+            notes.append(f"Параметр «{key}»={val} превышает разумный предел {cap} — уменьшен до {cap}.")
+            b[key] = cap
 
     if num_floors >= 5 and not b.get("has_elevator", False):
         notes.append(
