@@ -123,15 +123,68 @@ def _log(msg: str) -> None:
     print(msg, file=sys.stderr, flush=True)
 
 
+# Нормы КМК 2.08.01-89 — минимальные площади и ширины по типу помещения
+# (синхронизировано с src/floorplan/norms.py в Construction AI Copilot)
+_ROOM_NORMS = {
+    "living":   {"min_area": 8.0, "min_width": 2.5, "needs_window": True,  "zone": "facade"},
+    "bedroom":  {"min_area": 8.0, "min_width": 2.5, "needs_window": True,  "zone": "facade"},
+    "kitchen":  {"min_area": 8.0, "min_width": 1.7, "needs_window": True,  "zone": "wet"},
+    "bathroom": {"min_area": 2.7, "min_width": 1.2, "needs_window": False, "zone": "wet"},
+    "wc":       {"min_area": 1.2, "min_width": 0.8, "needs_window": False, "zone": "wet"},
+    "hallway":  {"min_area": 1.8, "min_width": 1.4, "needs_window": False, "zone": "entry"},
+    "dining":   {"min_area": 6.0, "min_width": 2.0, "needs_window": True,  "zone": "facade"},
+    "storage":  {"min_area": 1.5, "min_width": 0.8, "needs_window": False, "zone": "wet"},
+}
+
+
 def _build_prompt_text(width_m: float, depth_m: float, entry_side: str,
                         room_program: dict, description: str) -> str:
+    """Формирует текстовое описание квартиры для prompt2json() CHD.
+
+    Включает габариты, нормы помещений, зонирование и требования к окнам —
+    чтобы LLM (через prompt2json) построила граф, отражающий реальные
+    строительные нормы КМК Узбекистана, а не абстрактную западную планировку.
+    """
     rooms = list(room_program.get("facade", [])) + list(room_program.get("wet", []))
+
+    # Добавляем нормативные требования по каждому типу комнаты
+    norm_lines = []
+    for r in sorted(set(rooms)):
+        n = _ROOM_NORMS.get(r, _ROOM_NORMS["hallway"])
+        parts = [f"{r}: мин. площадь {n['min_area']} м², мин. ширина {n['min_width']} м"]
+        if n["needs_window"]:
+            parts.append("обязательно окно на фасаде")
+        if n["zone"] == "facade":
+            parts.append("жилая зона, у фасада")
+        elif n["zone"] == "wet":
+            parts.append("мокрая зона, ближе к входу")
+        norm_lines.append(", ".join(parts))
+
+    norm_block = "\n".join(norm_lines)
+
+    # Определяем зоны компактно
+    wet_types = [r for r in sorted(set(rooms)) if _ROOM_NORMS.get(r, {}).get("zone") == "wet"]
+    facade_types = [r for r in sorted(set(rooms)) if _ROOM_NORMS.get(r, {}).get("zone") == "facade"]
+
+    zones_parts = []
+    if wet_types:
+        zones_parts.append(f"Мокрые помещения ({', '.join(wet_types)}) — компактно, рядом со стояком ВК, у стороны входа")
+    if facade_types:
+        zones_parts.append(f"Жилые помещения ({', '.join(facade_types)}) — все с окнами на фасад, у противоложной от входа стены")
+
+    zones_block = "; ".join(zones_parts) if zones_parts else ""
+
+    entry_label = "слева" if entry_side == "west" else "справа"
+
     parts = [
-        f"Квартира {width_m:.1f}x{depth_m:.1f} м, вход со стороны {entry_side}.",
-        f"Нужны помещения: {', '.join(rooms)}." if rooms else "",
+        f"Квартира {width_m:.1f}x{depth_m:.1f} м,",
+        f"вход {entry_label} по длинной стороне, фасад с окнами — противоположная сторона.",
+        f"Состав помещений: {', '.join(rooms)}." if rooms else "",
+        f"Нормы:\n{norm_block}" if norm_lines else "",
+        f"Зонирование: {zones_block}." if zones_block else "",
         description or "",
     ]
-    return " ".join(p for p in parts if p)
+    return "\n\n".join(p for p in parts if p)
 
 
 def _make_llm_client():

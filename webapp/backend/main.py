@@ -504,6 +504,7 @@ class ArchitectRequest(BaseModel):
     requirements: str
     model: str = "local-model"
     floorplan_mode: str = "solver"  # "solver" | "neural" (LM Studio) | "chathousediffusion" (внешний CLI-мост)
+    building_pattern: str = "row"    # "row" | "corner" | "duplex" — тип секции
 
 
 @app.post("/api/model/architect")
@@ -752,6 +753,7 @@ def model_architect(req: ArchitectRequest):
                 apartment_rooms=int(building_meta.get("apartment_rooms", 2) or 2),
                 floorplan_mode=req.floorplan_mode if req.floorplan_mode in ("solver", "neural", "chathousediffusion") else "solver",
                 llm_model=req.model,
+                building_pattern=req.building_pattern,
                 has_elevator=bool(building_meta.get("has_elevator", False)),
                 elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),
                 elevator_capacity_kg=float(building_meta.get("elevator_capacity_kg", 400) or 400),

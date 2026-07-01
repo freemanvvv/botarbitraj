@@ -726,6 +726,7 @@ def create_apartment_building(
     apartment_rooms: int = 2,
     floorplan_mode: str = "solver",
     llm_model: str = "local-model",
+    building_pattern: str = "row",
     has_elevator: bool = True,
     elevators_per_entrance: int = 1,
     elevator_capacity_kg: float = 400,
@@ -843,22 +844,26 @@ def create_apartment_building(
         from .floorplan import generate_floorplan_llm
         fp_west = generate_floorplan_llm(width=apt_width, depth=apt_inner_depth,
                                           room_count=apartment_rooms, entry_side="west",
-                                          model=llm_model) or \
+                                          model=llm_model,
+                                          building_pattern=building_pattern) or \
             generate_floorplan(width=apt_width, depth=apt_inner_depth,
                                 room_count=apartment_rooms, entry_side="west")
         fp_east = generate_floorplan_llm(width=apt_width, depth=apt_inner_depth,
                                           room_count=apartment_rooms, entry_side="east",
-                                          model=llm_model) or \
+                                          model=llm_model,
+                                          building_pattern=building_pattern) or \
             generate_floorplan(width=apt_width, depth=apt_inner_depth,
                                 room_count=apartment_rooms, entry_side="east")
     elif floorplan_mode == "chathousediffusion":
         from .floorplan import generate_floorplan_chd
         fp_west = generate_floorplan_chd(width=apt_width, depth=apt_inner_depth,
-                                          room_count=apartment_rooms, entry_side="west") or \
+                                          room_count=apartment_rooms, entry_side="west",
+                                          building_pattern=building_pattern) or \
             generate_floorplan(width=apt_width, depth=apt_inner_depth,
                                 room_count=apartment_rooms, entry_side="west")
         fp_east = generate_floorplan_chd(width=apt_width, depth=apt_inner_depth,
-                                          room_count=apartment_rooms, entry_side="east") or \
+                                          room_count=apartment_rooms, entry_side="east",
+                                          building_pattern=building_pattern) or \
             generate_floorplan(width=apt_width, depth=apt_inner_depth,
                                 room_count=apartment_rooms, entry_side="east")
     else:

@@ -157,6 +157,37 @@ def _entry_hub_index(rooms, doors) -> int | None:
     return counts.most_common(1)[0][0]
 
 
+# Строительные нормы КМК — краткий контекст для промпта (синхронизирован
+# с norms.py и _build_prompt_text в chd_bridge/predict_floorplan.py)
+_CHD_NORM_BLOCK = (
+    "Планировка по строительным нормам КМК Узбекистана:\n"
+    "- Гостиная/спальня: мин. 8 м², мин. ширина 2.5 м, обязательно окно\n"
+    "- Кухня: мин. 8 м², мин. ширина 1.7 м, обязательно окно\n"
+    "- Санузел: мин. 2.7 м²\n"
+    "- Туалет: мин. 1.2 м²\n"
+    "- Прихожая: мин. 1.8 м², мин. ширина 1.4 м\n"
+    "- Мокрые зоны (кухня, санузел) компактно, рядом со стояком\n"
+    "- Все жилые комнаты с окнами на фасад\n"
+    "- Прихожая со стороны входа, распределяет доступ во все комнаты"
+)
+
+# Шаблоны типов застройки
+_CHD_PATTERN_DESC = {
+    "row": (
+        "Рядовая секция: общие стены с соседями слева и справа, "
+        "окна только на фасадную и дворовую стороны"
+    ),
+    "corner": (
+        "Угловая секция: окна на две стороны (фасад + торец), "
+        "дополнительное освещение боковых комнат"
+    ),
+    "duplex": (
+        "Двухуровневая квартира: первый уровень — прихожая, "
+        "кухня-гостиная, санузел, выход на террасу"
+    ),
+}
+
+
 def generate_floorplan_chd(
     width: float,
     depth: float,
@@ -167,6 +198,7 @@ def generate_floorplan_chd(
     bridge_python: str | None = None,
     bridge_script: str | None = None,
     timeout: float = 120.0,
+    building_pattern: str = "row",
 ) -> ApartmentFloorplan | None:
     """
     Пытается сгенерировать планировку через ChatHouseDiffusion (в отдельном
@@ -193,6 +225,17 @@ def generate_floorplan_chd(
         mask_path = os.path.join(tmpdir, "mask.png")
         mask_img.save(mask_path)
 
+        # Обогащаем description нормами КМК и типом застройки
+        pattern_desc = _CHD_PATTERN_DESC.get(building_pattern, _CHD_PATTERN_DESC["row"])
+        enriched_desc = (
+            f"Тип застройки: {pattern_desc}.\n\n"
+            f"{_CHD_NORM_BLOCK}\n\n"
+            f"Дополнительно: {description}"
+        ) if description else (
+            f"Тип застройки: {pattern_desc}.\n\n"
+            f"{_CHD_NORM_BLOCK}"
+        )
+
         request = {
             "mask_path": mask_path,
             "width_m": width,
@@ -200,7 +243,7 @@ def generate_floorplan_chd(
             "px_per_meter": px_per_meter,
             "entry_side": entry_side,
             "room_program": prog,
-            "description": description,
+            "description": enriched_desc,
         }
 
         try:

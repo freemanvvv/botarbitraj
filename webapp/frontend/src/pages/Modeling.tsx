@@ -253,7 +253,7 @@ export default function Modeling() {
       const res = await fetch(`${API}/api/model/architect`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ requirements: archReq, model: archModel, floorplan_mode: archFloorplanMode }),
+        body: JSON.stringify({ requirements: archReq, model: archModel, floorplan_mode: archFloorplanMode, building_pattern: "row" }),
       });
       clearTimeout(stepTimer); clearTimeout(stepTimer2);
       const d = await res.json();
