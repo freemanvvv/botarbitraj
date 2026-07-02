@@ -9,55 +9,52 @@ import math
 from .contracts import BuildingProgram, FloorPlan, RoomPlan, WallPlan, OpeningPlan, StoreyPlan, StairPlan
 
 
-def _squarified_treemap(areas: list[float], rect_w: float, rect_h: float) -> list[list[float]]:
-    """Упрощённый treemap: разбивает rect на прямоугольные области по площади."""
-    total = sum(areas)
-    if total == 0:
+def _squarified_treemap(areas: list[float], rect_w: float, rect_h: float, min_widths: list[float] | None = None) -> list[list[float]]:
+    """
+    Однорядное разбиение rect на вертикальные полосы по площади — раньше
+    называлось "упрощённый treemap" и пыталось заводить вторую строку при
+    переполнении ширины, но поскольку cell_w всегда пропорциональна area/
+    total, сумма cell_w математически равна rect_w и вторая строка
+    фактически никогда не создавалась — на практике это ВСЕГДА была одна
+    строка, только без учёта Room.min_width_m (LLM обязан его заполнять —
+    ARCHITECT_PROMPT прямо просит min_width_m, — но он попросту
+    игнорировался). Из-за этого узкие по площади комнаты (например,
+    прихожая) получали ширину меньше нормы КМК ещё до всякой проверки.
+
+    Здесь — тот же однорядный расклад, но каждая комната сперва получает
+    min_widths[i] гарантированно, остаток ширины распределяется по area
+    (тот же приём, что src/floorplan/solver.py:_split_widths). Каждая
+    комната по-прежнему занимает всю глубину rect_h (примыкает и к
+    передней, и к задней внешним стенам) — сознательное упрощение вместо
+    настоящего 2D treemap, но оно даёт гарантированный доступ к внешней
+    стене (и, значит, к окну) для КАЖДОЙ комнаты, что было основным
+    источником нарушений норм в house_norms.py.
+    """
+    n = len(areas)
+    if n == 0:
         return []
-    # Сортируем по убыванию
-    sorted_idx = sorted(range(len(areas)), key=lambda i: -areas[i])
-    results = [None] * len(areas)
+    total = sum(areas) or 1.0
+    mins = min_widths or [0.0] * n
 
-    # Простое рекурсивное разбиение
-    rows = []
+    sum_min = sum(mins)
+    if rect_w >= sum_min:
+        remaining = rect_w - sum_min
+        widths = [mw + remaining * (a / total) for mw, a in zip(mins, areas)]
+    else:
+        # Не помещается даже по минимумам — сжимаем пропорционально;
+        # получившееся нарушение нормы ширины поймает house_norms.py,
+        # так же как аналогичный fallback в solver.py.
+        scale = rect_w / sum_min if sum_min > 0 else 1.0 / n
+        widths = [mw * scale if sum_min > 0 else rect_w / n for mw in mins]
+
+    results = []
     cur_x = 0.0
-    cur_y = 0.0
-    remaining_w = rect_w
-    remaining_h = rect_h
-
-    for idx in sorted_idx:
-        area = areas[idx]
-        frac = area / total if total > 0 else 0
-        cell_w = frac * rect_w
-        cell_h = rect_h
-
-        # Если не влезает по ширине — новая строка
-        if cur_x + cell_w > rect_w:
-            cur_x = 0.0
-            # оставшиеся площади
-            remaining = [areas[j] for j in sorted_idx if results[j] is None]
-            if remaining:
-                r_total = sum(remaining)
-                new_row_h = rect_h * (r_total / total) if r_total > 0 else rect_h - cur_y
-                # Но для простоты: фиксированная высота
-                cell_h = rect_h - cur_y
-            else:
-                cell_h = rect_h - cur_y
-
-        if cell_w > 0 and cell_h > 0:
-            results[idx] = [
-                [cur_x, cur_y],
-                [cur_x + cell_w, cur_y],
-                [cur_x + cell_w, cur_y + cell_h],
-                [cur_x, cur_y + cell_h],
-            ]
-            cur_x += cell_w
-            if cur_x >= rect_w:
-                new_area_frac = area / total
-                cur_y += rect_h * new_area_frac if total > 0 else 0
-                total -= area
-
-    return [r for r in results if r is not None]
+    for w in widths:
+        results.append([
+            [cur_x, 0.0], [cur_x + w, 0.0], [cur_x + w, rect_h], [cur_x, rect_h],
+        ])
+        cur_x += w
+    return results
 
 
 def _walls_from_rooms(polygons: dict[str, list[list[float]]], thickness: float) -> list[WallPlan]:
@@ -129,22 +126,31 @@ def _openings_from_adjacency(
                 sill_m=0.0,
             ))
         else:
-            # Окно на внешней стене (не слишком короткой)
-            if length > 3.0:
+            # Окно на внешней стене. Порог раньше был length > 3.0 м — с
+            # прежним treemap (без учёта min_width_m) узкие комнаты почти
+            # всегда получали короткий сегмент внешней стены и оставались
+            # вовсе без окна (см. house_norms.py: "не примыкает к внешней
+            # стене с окном"), даже физически её касаясь. Однорядная
+            # раскладка с min_width_m делает сегменты стен более
+            # предсказуемыми (обычно ≥ нормативной ширины комнаты), так что
+            # порог снижен до практического минимума для оконного блока.
+            if length > 1.0:
+                win_w = min(2.4, max(0.6, length * 0.6))
                 openings.append(OpeningPlan(
                     wall=wall.id,
                     kind="window",
-                    offset_m=1.0,
-                    width_m=min(2.4, length * 0.4),
+                    offset_m=max(0.0, (length - win_w) / 2),
+                    width_m=win_w,
                     height_m=1.5,
                     sill_m=0.9,
                 ))
                 if length > 6.0:
+                    win_w2 = min(2.4, length * 0.3)
                     openings.append(OpeningPlan(
                         wall=wall.id,
                         kind="window",
-                        offset_m=length - 1.0 - min(2.4, length * 0.4),
-                        width_m=min(2.4, length * 0.4),
+                        offset_m=length - 1.0 - win_w2,
+                        width_m=win_w2,
                         height_m=1.5,
                         sill_m=0.9,
                     ))
@@ -169,7 +175,8 @@ def generate_floor_plan(program: BuildingProgram) -> FloorPlan:
 
         # Treemap
         areas = [r.area_m2 for r in level_rooms]
-        rects = _squarified_treemap(areas, fw, fd)
+        min_widths = [r.min_width_m for r in level_rooms]
+        rects = _squarified_treemap(areas, fw, fd, min_widths)
 
         # Строим полигоны
         polygons = {}

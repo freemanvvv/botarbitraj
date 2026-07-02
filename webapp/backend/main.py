@@ -858,9 +858,18 @@ def _bbox_area(polygon: list) -> float:
     return (max(xs) - min(xs)) * (max(ys) - min(ys))
 
 
-def _generate_house_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float) -> tuple:
+def _generate_house_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float,
+                          max_repair_attempts: int = 1) -> tuple:
     """building_kind="house": текст → BuildingProgram (LLM) → FloorPlan
-    (treemap-солвер, src/bim_agents/) → SVG по этажам + проверка норм."""
+    (treemap-солвер, src/bim_agents/) → SVG по этажам + проверка норм.
+
+    Репэйр-цикл: та же идея, что src/floorplan/neural.py уже применяет для
+    квартир — если после проверки остались ошибки, отдаём LLM их список и
+    просим переработать BuildingProgram (площади/min_width_m/состав), затем
+    перепроверяем. Раньше единственным способом починить план было нажать
+    «Перегенерировать» и просто получить другую случайную планировку —
+    теперь модель сначала пробует исправиться целенаправленно; кнопка
+    регенерации остаётся для случаев, когда и это не помогло."""
     import requests as req_lib
     import re
     from src.config import LM_STUDIO_BASE_URL
@@ -877,51 +886,67 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
             f"и составе помещений:\n{norms_block}"
         )
 
-    resp = req_lib.post(
-        f"{LM_STUDIO_BASE_URL}/chat/completions",
-        json={
-            "model": model,
-            "messages": [
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": description},
-            ],
-            "temperature": temperature,
-            "max_tokens": 2000,
-        },
-        timeout=120,
-    )
-    resp.raise_for_status()
-    raw = resp.json()["choices"][0]["message"]["content"].strip()
-    json_match = re.search(r'\{[\s\S]*\}', raw)
-    if not json_match:
-        raise ValueError("LLM не вернул JSON")
-    data = json.loads(json_match.group())
-    program = BuildingProgram(**data)
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": description},
+    ]
 
-    # Инженерные пределы — тот же DoS-паттерн, что и для BuildingParams/
-    # LLM-сметы: не даём одной генерацией создать неограниченно большой план.
-    if len(program.rooms) > 60:
-        raise ValueError(f"Слишком много помещений в ответе модели ({len(program.rooms)} > 60)")
-    if program.storeys > 30:
-        raise ValueError(f"Слишком много этажей в ответе модели ({program.storeys} > 30)")
+    best = None  # (error_count, floors, norms_issues, raw_program, raw_floorplan, name)
 
-    floor_plan = generate_floor_plan(program)
+    for attempt in range(max_repair_attempts + 1):
+        resp = req_lib.post(
+            f"{LM_STUDIO_BASE_URL}/chat/completions",
+            json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": 2000},
+            timeout=120,
+        )
+        resp.raise_for_status()
+        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        json_match = re.search(r'\{[\s\S]*\}', raw)
+        if not json_match:
+            if best is not None:
+                break
+            raise ValueError("LLM не вернул JSON")
+        data = json.loads(json_match.group())
+        program = BuildingProgram(**data)
 
-    floors = []
-    for storey in floor_plan.storeys:
-        area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
-        floors.append({
-            "level": storey.level,
-            "label": f"Этаж {storey.level}",
-            "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
-            "area_m2": round(area, 1),
-        })
+        # Инженерные пределы — тот же DoS-паттерн, что и для BuildingParams/
+        # LLM-сметы: не даём одной генерацией создать неограниченно большой план.
+        if len(program.rooms) > 60:
+            raise ValueError(f"Слишком много помещений в ответе модели ({len(program.rooms)} > 60)")
+        if program.storeys > 30:
+            raise ValueError(f"Слишком много этажей в ответе модели ({program.storeys} > 30)")
 
-    norms_issues = validate_house_plan(program, floor_plan) if check_norms else []
-    raw_program = {"building_program": program.model_dump()}
-    raw_floorplan = floor_plan.model_dump()
+        floor_plan = generate_floor_plan(program)
 
-    return floors, norms_issues, raw_program, raw_floorplan, program.project_name
+        floors = []
+        for storey in floor_plan.storeys:
+            area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
+            floors.append({
+                "level": storey.level,
+                "label": f"Этаж {storey.level}",
+                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "area_m2": round(area, 1),
+            })
+
+        norms_issues = validate_house_plan(program, floor_plan) if check_norms else []
+        errors = [i for i in norms_issues if i["severity"] == "error"]
+        raw_program = {"building_program": program.model_dump()}
+        raw_floorplan = floor_plan.model_dump()
+
+        if best is None or len(errors) < best[0]:
+            best = (len(errors), floors, norms_issues, raw_program, raw_floorplan, program.project_name)
+
+        if not errors or attempt >= max_repair_attempts:
+            break
+
+        fixes = "; ".join(i["message"] for i in errors[:8])
+        messages.append({"role": "assistant", "content": raw})
+        messages.append({"role": "user", "content": (
+            "В плане есть нарушения норм, исправь площади/min_width_m/состав помещений "
+            f"и верни BuildingProgram заново тем же форматом JSON: {fixes}"
+        )})
+
+    return best[1], best[2], best[3], best[4], best[5]
 
 
 def _generate_apartment_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float) -> tuple:
@@ -1012,13 +1037,82 @@ def house_plan_save(req: HousePlanSaveRequest):
     return {"plan_id": plan_id}
 
 
+def _apartment_floorplan_from_dict(d: dict):
+    """Обратное к dataclasses.asdict(ApartmentFloorplan) — восстанавливает
+    вложенные RoomBox/DoorSpec, а не оставляет их обычными dict'ами."""
+    from src.floorplan.ir import ApartmentFloorplan, RoomBox, DoorSpec
+    return ApartmentFloorplan(
+        width=d["width"], depth=d["depth"], entry_side=d["entry_side"],
+        rooms=[RoomBox(**r) for r in d["rooms"]],
+        doors=[DoorSpec(**dd) for dd in d["doors"]],
+        source=d.get("source", "solver"),
+    )
+
+
+def _rerender_saved_plan(plan: dict) -> dict:
+    """Черновики хранятся как сырые program/floorplan (без SVG — дублировать
+    уже отрендеренную картинку в БД смысла нет) — при открытии сохранённого
+    проекта заново рендерим SVG из тех же данных теми же функциями, что и
+    /api/house/plan, чтобы отдать фронту тот же формат ответа."""
+    if plan["building_kind"] == "house":
+        from src.bim_agents.contracts import BuildingProgram, FloorPlan
+        from src.floor_plan_render import render_storey_svg
+
+        program = BuildingProgram(**plan["program"]["building_program"])
+        floor_plan = FloorPlan(**plan["floorplan"])
+        floors = []
+        for storey in floor_plan.storeys:
+            area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
+            floors.append({
+                "level": storey.level,
+                "label": f"Этаж {storey.level}",
+                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "area_m2": round(area, 1),
+            })
+    else:
+        from src.floor_plan_render import render_apartment_floor_svg
+
+        fp_west = _apartment_floorplan_from_dict(plan["floorplan"]["west"])
+        fp_east = _apartment_floorplan_from_dict(plan["floorplan"]["east"])
+        floors = [
+            {"level": 0, "label": "Квартира — вход с запада", "svg": render_apartment_floor_svg(fp_west, "Квартира (запад)"), "area_m2": fp_west.total_area()},
+            {"level": 1, "label": "Квартира — вход с востока", "svg": render_apartment_floor_svg(fp_east, "Квартира (восток)"), "area_m2": fp_east.total_area()},
+        ]
+
+    return {
+        "id": plan["id"],
+        "building_kind": plan["building_kind"],
+        "name": plan["name"],
+        "description": plan["description"],
+        "summary": plan["name"],
+        "floors": floors,
+        "norms_issues": plan["norms_issues"],
+        "norms_citations": plan["norms_citations"],
+        "raw_program": plan["program"],
+        "raw_floorplan": plan["floorplan"],
+    }
+
+
+@app.get("/api/house/plans")
+def house_plans_list():
+    """Список сохранённых черновиков — для экрана «Мои проекты»."""
+    from src.house_plan_store import list_house_plans
+    return {"plans": list_house_plans()}
+
+
 @app.get("/api/house/{plan_id}")
 def house_plan_get(plan_id: int):
+    """Возвращает сохранённый план с заново отрендеренными SVG-этажами —
+    готовый к прямой подстановке в состояние мастера на фронте (тот же
+    формат, что и /api/house/plan)."""
     from src.house_plan_store import get_house_plan
     plan = get_house_plan(plan_id)
     if not plan:
         raise HTTPException(404, "План не найден")
-    return plan
+    try:
+        return _rerender_saved_plan(plan)
+    except Exception as e:
+        raise _server_error(e, "Ошибка открытия сохранённого плана")
 
 
 @app.post("/api/house/{plan_id}/build-3d")

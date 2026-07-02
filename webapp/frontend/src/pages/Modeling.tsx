@@ -38,6 +38,14 @@ interface BuildStats {
   [key: string]: any;
 }
 
+interface SavedPlan {
+  id: number;
+  building_kind: BuildingKind;
+  name: string;
+  description: string;
+  created_at: string;
+}
+
 export default function Modeling() {
   const [buildingKind, setBuildingKind] = useState<BuildingKind | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -60,14 +68,45 @@ export default function Modeling() {
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [rightView, setRightView] = useState<"album" | "3d">("album");
 
+  const [savedPlans, setSavedPlans] = useState<SavedPlan[]>([]);
+  const [openLoading, setOpenLoading] = useState<number | null>(null);
+
   const messagesEndRef = useRef<HTMLDivElement>(null);
+
+  const refreshSavedPlans = () => {
+    fetch(`${API}/api/house/plans`)
+      .then(r => r.json())
+      .then(d => setSavedPlans(d.plans || []))
+      .catch(() => {});
+  };
 
   useEffect(() => {
     fetch(`${API}/api/chat/models`)
       .then(r => r.json())
       .then(d => { if (d.models?.length) { setModels(d.models); setModel(d.models[0]); } })
       .catch(() => {});
+    refreshSavedPlans();
   }, []);
+
+  const openSavedPlan = async (id: number) => {
+    setOpenLoading(id);
+    try {
+      const res = await fetch(`${API}/api/house/${id}`);
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || "Не удалось открыть проект");
+      setBuildingKind(d.building_kind);
+      setPlan(d);
+      setPage(0);
+      setLastDescription(d.description || "");
+      setSavedPlanId(d.id);
+      setStats(null); setSelectedFile(null); setRightView("album");
+      setMessages([{ role: "bot", content: `📂 Открыт сохранённый проект «${d.name}».` }]);
+    } catch (e: any) {
+      alert(e.message);
+    } finally {
+      setOpenLoading(null);
+    }
+  };
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -149,6 +188,7 @@ export default function Modeling() {
       if (!res.ok) throw new Error(d.detail || "Ошибка сохранения");
       setSavedPlanId(d.plan_id);
       setMessages(prev => [...prev, { role: "bot", content: "💾 План сохранён. Можно построить 3D-модель." }]);
+      refreshSavedPlans();
     } catch (e: any) {
       setMessages(prev => [...prev, { role: "bot", content: `❌ ${e.message}` }]);
     } finally {
@@ -201,6 +241,35 @@ export default function Modeling() {
             </button>
           ))}
         </div>
+
+        {savedPlans.length > 0 && (
+          <div style={{ marginTop: 8, maxWidth: 640, marginLeft: "auto", marginRight: "auto", width: "100%" }}>
+            <div style={{ fontSize: "0.75rem", color: "var(--text3)", textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 8 }}>
+              📂 Мои проекты
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 220, overflowY: "auto" }}>
+              {savedPlans.map(p => (
+                <button
+                  key={p.id}
+                  onClick={() => openSavedPlan(p.id)}
+                  disabled={openLoading === p.id}
+                  style={{
+                    display: "flex", alignItems: "center", gap: 10, padding: "9px 14px",
+                    background: "var(--bg1)", border: "1px solid var(--border2)", borderRadius: 8,
+                    cursor: openLoading === p.id ? "default" : "pointer", color: "var(--text)",
+                    fontFamily: "inherit", textAlign: "left", fontSize: "0.83rem",
+                  }}
+                >
+                  <span>{p.building_kind === "house" ? "🏡" : "🏢"}</span>
+                  <span style={{ flex: 1 }}>{p.name || "Без названия"}</span>
+                  <span style={{ fontSize: "0.72rem", color: "var(--text3)" }}>
+                    {openLoading === p.id ? "⏳" : new Date(p.created_at).toLocaleDateString()}
+                  </span>
+                </button>
+              ))}
+            </div>
+          </div>
+        )}
       </div>
     );
   }
@@ -324,6 +393,17 @@ export default function Modeling() {
                     ))}
                   </div>
                 </div>
+              )}
+
+              {plan.norms_citations && (
+                <details style={{ marginTop: 8, padding: "8px 12px", background: "rgba(48,209,88,0.08)", border: "1px solid rgba(48,209,88,0.2)", borderRadius: 8 }}>
+                  <summary style={{ cursor: "pointer", userSelect: "none", fontSize: "0.68rem", fontWeight: 600, color: "#30d158", textTransform: "uppercase", letterSpacing: "0.06em" }}>
+                    📚 Применённые нормы (КМК/ШНК, RAG)
+                  </summary>
+                  <pre style={{ marginTop: 8, marginBottom: 0, whiteSpace: "pre-wrap", fontFamily: "inherit", fontSize: "0.75rem", color: "var(--text)", lineHeight: 1.6, maxHeight: 220, overflowY: "auto" }}>
+                    {plan.norms_citations}
+                  </pre>
+                </details>
               )}
 
               <div style={{ display: "flex", gap: 8, marginTop: 12 }}>

@@ -138,17 +138,22 @@ class SVGPlanGenerator:
             sy = self._s(gy - min_y)
             svg += f'<line class="grid" x1="0" y1="{sy}" x2="{svg_w}" y2="{sy}"/>\n'
 
-        # Rooms
+        # Rooms. Подписи — ближе к верху комнаты, а не по центру: двери на
+        # общих стенах между комнатами ставятся на середине высоты стены, и
+        # раз почти все комнаты (однорядная раскладка house-солвера, см.
+        # bim_agents/floorplan_agent.py) занимают всю глубину footprint'а,
+        # центр подписи и маркер двери раньше совпадали и накладывались.
         for room in self.rooms:
             rx = self._s(room.x - min_x)
             ry = self._s(room.y - min_y)
             rw = self._s(room.width)
             rh = self._s(room.height)
             svg += f'<rect class="room-fill" x="{rx}" y="{ry}" width="{rw}" height="{rh}" rx="2"/>\n'
-            svg += f'<text class="label" x="{rx + rw / 2}" y="{ry + rh / 2}">{room.name}</text>\n'
+            label_y = ry + min(28, rh * 0.3)
+            svg += f'<text class="label" x="{rx + rw / 2}" y="{label_y}">{room.name}</text>\n'
             # Area label
             area = room.width * room.height
-            svg += f'<text class="dim" x="{rx + rw / 2}" y="{ry + rh / 2 + 12}">{area:.1f} м²</text>\n'
+            svg += f'<text class="dim" x="{rx + rw / 2}" y="{label_y + 12}">{area:.1f} м²</text>\n'
 
         # Walls
         for wall in self.walls:
