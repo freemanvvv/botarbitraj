@@ -206,7 +206,7 @@ def _create_slab(ifc, footprint, ctx, z: float, thick: float, name: str, ptype: 
     return slab
 
 
-def generate_ifc(floor_plan: FloorPlan, output_dir: str = "output") -> str:
+def generate_ifc(floor_plan: FloorPlan, output_dir: str = "output", ceiling_height_m: float = 3.0) -> str:
     """FloorPlan → IFC4 файл. Возвращает путь к файлу."""
     if not IFC_OK:
         raise ImportError("IfcOpenShell не установлен")
@@ -241,10 +241,17 @@ def generate_ifc(floor_plan: FloorPlan, output_dir: str = "output") -> str:
 
     for sdata in floor_plan.storeys:
         z = sdata.elevation_m
-        h = 3.0
+        h = ceiling_height_m
 
         storey = ifc.create_entity("IfcBuildingStorey", _g(ifc), None,
                                     f"Этаж {sdata.level}")
+        # Elevation — раньше не задавался вовсе (атрибут оставался null),
+        # хотя фактическая геометрия элементов этажа корректно смещена по Z
+        # через их собственный ObjectPlacement. Внешние IFC-вьюеры (Revit,
+        # BIMVision, Solibri) используют именно этот атрибут для деления
+        # модели на этажи в своём UI — без него они видят один
+        # "безэтажный" список элементов.
+        storey.Elevation = z
         ifc.create_entity("IfcRelAggregates", _g(ifc), None, None,
                            RelatingObject=bldg, RelatedObjects=[storey])
 

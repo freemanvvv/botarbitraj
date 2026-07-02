@@ -56,3 +56,41 @@ def test_generated_house_ifc_geometry_tessellates(tmp_path):
 
     assert total > 0
     assert failures == [], f"{len(failures)}/{total} elements failed to tessellate: {failures[:5]}"
+
+
+def test_generated_ifc_storeys_respect_custom_ceiling_height(tmp_path):
+    """Регрессия: IfcBuildingStorey.Elevation раньше не выставлялся (оставался
+    null — внешние IFC-вьюеры используют этот атрибут для деления модели на
+    этажи), а высота стен была захардкожена в 3.0 м независимо от
+    program.ceiling_height_m, из-за чего при нестандартной высоте потолка
+    стены 2-го этажа либо перекрывались с 1-м, либо не доставали до его
+    перекрытия."""
+    ceiling_height = 2.7
+    program = BuildingProgram(
+        project_name="Т", storeys=2, ceiling_height_m=ceiling_height,
+        footprint={"width_m": 10, "depth_m": 8},
+        rooms=[
+            Room(id="living_01", name="Гостиная", storey=0, area_m2=30, type="IfcSpace:LIVING"),
+            Room(id="bed_01", name="Спальня", storey=1, area_m2=20, type="IfcSpace:BEDROOM"),
+        ],
+    )
+    floor_plan = generate_floor_plan(program)
+    path, _ = generate_ifc(floor_plan, output_dir=str(tmp_path), ceiling_height_m=ceiling_height)
+
+    ifc = ifcopenshell.open(path)
+    storeys = sorted(ifc.by_type("IfcBuildingStorey"), key=lambda s: s.Name)
+    assert [s.Elevation for s in storeys] == [0.0, ceiling_height]
+
+    settings = ifcopenshell.geom.settings()
+    settings.set("use-world-coords", True)
+    walls_by_storey_z = {0.0: [], ceiling_height: []}
+    for wall in ifc.by_type("IfcWall"):
+        shape = ifcopenshell.geom.create_shape(settings, wall)
+        zs = shape.geometry.verts[2::3]
+        base = min(zs)
+        assert base in walls_by_storey_z, f"unexpected wall base elevation {base}"
+        walls_by_storey_z[base].append(max(zs) - min(zs))
+
+    assert len(walls_by_storey_z[0.0]) > 0 and len(walls_by_storey_z[ceiling_height]) > 0
+    for height in walls_by_storey_z[0.0] + walls_by_storey_z[ceiling_height]:
+        assert abs(height - ceiling_height) < 1e-6

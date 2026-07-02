@@ -1131,7 +1131,7 @@ def house_plan_build_3d(plan_id: int):
 
             program = BuildingProgram(**plan["program"]["building_program"])
             floor_plan = FloorPlan(**plan["floorplan"])
-            path, stats = generate_ifc(floor_plan)
+            path, stats = generate_ifc(floor_plan, ceiling_height_m=program.ceiling_height_m)
             integrity = validate_model_integrity(path)
 
             fp_issues = plan.get("norms_issues") or []

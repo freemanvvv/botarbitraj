@@ -49,3 +49,30 @@ def test_validate_house_plan_no_false_positive_for_compliant_rooms():
     floor_plan = generate_floor_plan(program)
     issues = validate_house_plan(program, floor_plan)
     assert issues == []
+
+
+def test_validate_house_plan_middle_room_matches_its_own_exterior_walls():
+    # Регрессия: с 2 комнатами (см. тест выше) обе всегда касаются внешних
+    # левой/правой стен, и середина ряда не задействуется вообще. С 3+
+    # комнатами средняя комната не имеет ни левой, ни правой внешней стены —
+    # только верхнюю и нижнюю (границы footprint'а), и именно на них
+    # раньше ловилось несовпадение _edge_key: _walls_from_rooms в
+    # floorplan_agent.py округляет координаты до 4 знаков и ИМЕННО эти
+    # округлённые координаты кладёт в WallPlan.axis, а house_norms._edge_key
+    # раньше округляла ещё раз до 3 знаков поверх уже округлённых — двойное
+    # округление для координат вида x.xxx5 давало другой результат, чем
+    # прямое округление до 3 знаков нераунженного полигона комнаты, и
+    # _walls_touching_room не находил стену вовсе. Из-за этого средняя
+    # комната ложно считалась не примыкающей к окну, хотя окно на её
+    # собственной внешней стене было. Площади подобраны так, чтобы у средней
+    # комнаты получилась "некруглая" граница (не кратная 0.001 сама по
+    # себе) — именно на таких числах расхождение и проявлялось.
+    program = _program([
+        Room(id="bed_a", name="Спальня А", storey=0, area_m2=16, type="IfcSpace:BEDROOM", min_width_m=3.0),
+        Room(id="bed_b", name="Спальня Б", storey=0, area_m2=14, type="IfcSpace:BEDROOM", min_width_m=2.8),
+        Room(id="bed_c", name="Спальня В", storey=0, area_m2=12, type="IfcSpace:BEDROOM", min_width_m=2.8),
+        Room(id="bath", name="Санузел", storey=0, area_m2=5, type="IfcSpace:BATHROOM", min_width_m=1.5),
+    ], footprint=(11, 9))
+    floor_plan = generate_floor_plan(program)
+    issues = validate_house_plan(program, floor_plan)
+    assert issues == []

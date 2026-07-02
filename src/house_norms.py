@@ -55,7 +55,16 @@ def _room_bbox(polygon: list[list[float]]) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
 
 
-def _edge_key(p1, p2, tol=3):
+def _edge_key(p1, p2, tol=4):
+    # tol должен совпадать с округлением в
+    # bim_agents/floorplan_agent.py::_walls_from_rooms (там же tol=4) —
+    # wall.axis уже хранит координаты, округлённые до 4 знаков. Двойное
+    # округление (сюда round(x,3) поверх уже round(x,4)) даёт разные
+    # результаты для чисел вида 6.3745: round(6.3745,3)==6.375, тогда как
+    # прямое round(6.374468...,3) с исходного полигона комнаты даёт 6.374 —
+    # ключи расходились, и _walls_touching_room не находил стены комнаты,
+    # из-за чего внутренние комнаты ложно считались без окна на внешней
+    # стене.
     return tuple(sorted((tuple(round(c, tol) for c in p1), tuple(round(c, tol) for c in p2))))
 
 
