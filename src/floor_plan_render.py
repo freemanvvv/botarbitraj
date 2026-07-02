@@ -56,10 +56,12 @@ def render_storey_svg(program, storey, title: str) -> str:
         if not wall:
             continue
         x, y = _point_along_wall(wall.axis, op.offset_m + op.width_m / 2)
+        (wx1, wy1), (wx2, wy2) = wall.axis
+        horizontal = abs(wy1 - wy2) < 1e-3
         if op.kind == "door":
-            gen.add_door(x, y, width=op.width_m)
+            gen.add_door(x, y, width=op.width_m, horizontal=horizontal)
         else:
-            gen.add_window(x, y, width=op.width_m)
+            gen.add_window(x, y, width=op.width_m, horizontal=horizontal)
 
     return gen.generate(title=title)
 
@@ -80,12 +82,12 @@ def render_apartment_floor_svg(fp, title: str) -> str:
     for d in fp.doors:
         if d.kind == "entry":
             x = 0.0 if fp.entry_side == "west" else fp.width
-            gen.add_door(x, d.y, width=d.width)
+            gen.add_door(x, d.y, width=d.width, horizontal=False)
         else:
-            gen.add_door(d.x, d.y, width=d.width)
+            gen.add_door(d.x, d.y, width=d.width, horizontal=(d.wall_axis == "x"))
 
     for room in fp.rooms:
         if room.touches_facade(fp.depth):
-            gen.add_window(room.cx, fp.depth, width=min(1.5, room.width * 0.6))
+            gen.add_window(room.cx, fp.depth, width=min(1.5, room.width * 0.6), horizontal=True)
 
     return gen.generate(title=title)
