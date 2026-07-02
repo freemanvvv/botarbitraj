@@ -28,6 +28,19 @@ def _cp3(ifc, x, y, z):
     return ifc.create_entity("IfcCartesianPoint", (float(x), float(y), float(z)))
 
 
+def _cp2(ifc, x, y):
+    return ifc.create_entity("IfcCartesianPoint", (float(x), float(y)))
+
+
+def _placement_2d(ifc, x=0.0, y=0.0):
+    """IfcAxis2Placement2D.Location must be a 2D IfcCartesianPoint — the
+    3-coordinate _cp3 used here previously produced a dimensionally invalid
+    placement that ifcopenshell.geom rejected with 'Unexpected topology'
+    (entity creation succeeds since schema validation is weak at that point,
+    but tessellation fails downstream for every profile built on top of it)."""
+    return ifc.create_entity("IfcAxis2Placement2D", _cp2(ifc, x, y), ifc.create_entity("IfcDirection", (1.0, 0.0)))
+
+
 def _d3(ifc, x, y, z):
     return ifc.create_entity("IfcDirection", (float(x), float(y), float(z)))
 
@@ -36,8 +49,13 @@ def _make_placement(ifc, x, y, z, x_axis=None):
     origin = _cp3(ifc, x, y, z)
     z_dir = _d3(ifc, 0, 0, 1)
     x_dir = x_axis or _d3(ifc, 1, 0, 0)
-    return ifc.create_entity("IfcLocalPlacement",
-                              ifc.create_entity("IfcAxis2Placement3D", origin, z_dir, x_dir))
+    a3 = ifc.create_entity("IfcAxis2Placement3D", origin, z_dir, x_dir)
+    # IfcLocalPlacement attribute order is (PlacementRelTo, RelativePlacement)
+    # — a3 must be the SECOND arg. Passing it first (as before) put the axis
+    # placement into PlacementRelTo (wrong type) and left the required
+    # RelativePlacement null, which is why ifcopenshell.geom failed every
+    # single shape in this module with 'Unexpected topology'.
+    return ifc.create_entity("IfcLocalPlacement", None, a3)
 
 
 def _make_extrusion(ifc, profile, depth):
@@ -53,6 +71,16 @@ def _add_material(ifc, product, name: str):
                        RelatedObjects=[product], RelatingMaterial=mat)
 
 
+def _wrap_shape(ifc, rep):
+    """IfcProduct.Representation must be an IfcProductDefinitionShape, not a
+    bare IfcShapeRepresentation — without this wrapper the IFC parses fine
+    (schema doesn't reject it outright at the entity level) but
+    ifcopenshell.geom.create_shape() raises 'Instance of type
+    IfcShapeRepresentation cannot be cast to IfcProductRepresentation' for
+    every single element, so the web viewer silently renders nothing."""
+    return ifc.create_entity("IfcProductDefinitionShape", None, None, [rep])
+
+
 def _create_space(ifc, storey, room_id: str, polygon: list[list[float]], z: float, h: float, ctx) -> object:
     """Создаёт замкнутое IfcSpace."""
     space = ifc.create_entity("IfcSpace", _g(ifc), None, room_id)
@@ -60,16 +88,21 @@ def _create_space(ifc, storey, room_id: str, polygon: list[list[float]], z: floa
     space.ObjectPlacement = _make_placement(ifc, 0, 0, z)
     space.LongName = room_id
 
-    # Профиль-многоугольник
-    pts = [_cp3(ifc, p[0], p[1], 0) for p in polygon]
+    # Профиль-многоугольник. IfcArbitraryClosedProfileDef.OuterCurve должен
+    # быть IfcCurve (IfcPolyline) в 2D — раньше сюда передавался IfcPolyLoop
+    # (это для граней B-rep, не профилей) из 3D-точек, а сам IfcPolyline
+    # даже не замыкался (первая точка ≠ последней) — ifcopenshell.geom не
+    # мог протесселировать такой профиль ('Failed to process shape').
+    pts = [_cp2(ifc, p[0], p[1]) for p in polygon]
     if not pts:
         return space
+    if pts[0] != pts[-1]:
+        pts = pts + [pts[0]]
     poly = ifc.create_entity("IfcPolyline", pts)
-    closed = ifc.create_entity("IfcPolyLoop", [pi for pi in pts])
-    area_def = ifc.create_entity("IfcArbitraryClosedProfileDef", "AREA", None, closed)
+    area_def = ifc.create_entity("IfcArbitraryClosedProfileDef", "AREA", None, poly)
     ext = _make_extrusion(ifc, area_def, h)
     rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [ext])
-    space.Representation = rep
+    space.Representation = _wrap_shape(ifc, rep)
     ifc.create_entity("IfcRelContainedInSpatialStructure", _g(ifc), None, None,
                        RelatedElements=[space], RelatingStructure=storey)
     return space
@@ -88,11 +121,11 @@ def _create_wall(ifc, wall_plan, ctx, z: float, h: float) -> object:
     wall.ObjectPlacement = _make_placement(ifc, x1, y1, z,
                                             _d3(ifc, math.cos(angle), math.sin(angle), 0))
     prof = ifc.create_entity("IfcRectangleProfileDef", "AREA", None,
-                              ifc.create_entity("IfcAxis2Placement2D", _cp3(ifc, 0, 0, 0)),
+                              _placement_2d(ifc),
                               float(length), float(thick))
     ext = _make_extrusion(ifc, prof, h)
     rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [ext])
-    wall.Representation = rep
+    wall.Representation = _wrap_shape(ifc, rep)
     _add_material(ifc, wall, "бетон")
     return wall
 
@@ -106,14 +139,25 @@ def _create_opening_and_fill(ifc, wall, opening_plan, ctx, z: float) -> tuple:
     op.ObjectPlacement = _make_placement(ifc, opening_plan.offset_m, 0,
                                           z + opening_plan.sill_m)
     prof = ifc.create_entity("IfcRectangleProfileDef", "AREA", None,
-                              ifc.create_entity("IfcAxis2Placement2D", _cp3(ifc, 0, 0, 0)),
+                              _placement_2d(ifc),
                               float(opening_plan.width_m), float(thick))
     ext = _make_extrusion(ifc, prof, opening_plan.height_m)
     rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [ext])
-    op.Representation = rep
+    op.Representation = _wrap_shape(ifc, rep)
     ifc.create_entity("IfcRelVoidsElement", _g(ifc), None, None,
                        RelatingBuildingElement=wall, RelatedOpeningElement=op)
     return op
+
+
+def _fill_geometry(ifc, product, ctx, width: float, height: float, thick: float = 0.08):
+    """Простая коробчатая геометрия для окна/двери (заполнение проёма) —
+    без неё IfcWindow/IfcDoor остаются вовсе без Representation и
+    ifcopenshell.geom не может их отобразить ('Representation is NULL')."""
+    prof = ifc.create_entity("IfcRectangleProfileDef", "AREA", None,
+                              _placement_2d(ifc), float(width), float(thick))
+    ext = _make_extrusion(ifc, prof, height)
+    rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [ext])
+    product.Representation = _wrap_shape(ifc, rep)
 
 
 def _create_window(ifc, wall, opening_plan, ctx, z: float):
@@ -124,6 +168,7 @@ def _create_window(ifc, wall, opening_plan, ctx, z: float):
     win.OverallHeight = opening_plan.height_m
     win.ObjectPlacement = _make_placement(ifc, opening_plan.offset_m + opening_plan.width_m/2, -0.03,
                                            z + opening_plan.sill_m)
+    _fill_geometry(ifc, win, ctx, opening_plan.width_m, opening_plan.height_m)
     _add_material(ifc, win, "стеклопакет")
     ifc.create_entity("IfcRelFillsElement", _g(ifc), None, None,
                        RelatingOpeningElement=op, RelatedBuildingElement=win)
@@ -138,6 +183,7 @@ def _create_door(ifc, wall, opening_plan, ctx, z: float):
     door.OverallHeight = opening_plan.height_m
     door.ObjectPlacement = _make_placement(ifc, opening_plan.offset_m + opening_plan.width_m/2, -0.03,
                                             z + opening_plan.sill_m)
+    _fill_geometry(ifc, door, ctx, opening_plan.width_m, opening_plan.height_m)
     _add_material(ifc, door, "дерево")
     ifc.create_entity("IfcRelFillsElement", _g(ifc), None, None,
                        RelatingOpeningElement=op, RelatedBuildingElement=door)
@@ -151,11 +197,11 @@ def _create_slab(ifc, footprint, ctx, z: float, thick: float, name: str, ptype: 
     slab.PredefinedType = ptype
     slab.ObjectPlacement = _make_placement(ifc, 0, 0, z)
     prof = ifc.create_entity("IfcRectangleProfileDef", "AREA", None,
-                              ifc.create_entity("IfcAxis2Placement2D", _cp3(ifc, 0, 0, 0)),
+                              _placement_2d(ifc),
                               float(fw), float(fd))
     ext = _make_extrusion(ifc, prof, thick)
     rep = ifc.create_entity("IfcShapeRepresentation", ctx, "Body", "SweptSolid", [ext])
-    slab.Representation = rep
+    slab.Representation = _wrap_shape(ifc, rep)
     _add_material(ifc, slab, "железобетон")
     return slab
 
@@ -170,11 +216,14 @@ def generate_ifc(floor_plan: FloorPlan, output_dir: str = "output") -> str:
     # Project
     proj = ifc.create_entity("IfcProject", _g(ifc), None, "BIM Building")
 
-    # Контекст
-    ctx = ifc.create_entity("IfcGeometricRepresentationContext")
-    ctx.ContextIdentifier = "Model"
-    ctx.ContextType = "Model"
-    ctx.CoordinateSpaceDimension = 3
+    # Контекст. WorldCoordinateSystem — обязательный атрибут
+    # IfcGeometricRepresentationContext; без него (как было раньше — сущность
+    # создавалась с нулём позиционных аргументов и WCS никогда не
+    # присваивался) ifcopenshell.geom проваливает тесселяцию АБСОЛЮТНО
+    # любой геометрии в этом контексте с 'Unexpected topology', даже если
+    # у самих профилей/экструзий всё корректно.
+    wcs = ifc.create_entity("IfcAxis2Placement3D", _cp3(ifc, 0, 0, 0), _d3(ifc, 0, 0, 1), _d3(ifc, 1, 0, 0))
+    ctx = ifc.create_entity("IfcGeometricRepresentationContext", "Model", "Model", 3, 1e-5, wcs, None)
 
     # Units
     unit_m = ifc.create_entity("IfcSIUnit", None, "LENGTHUNIT", None, "METRE")

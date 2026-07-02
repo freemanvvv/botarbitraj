@@ -173,3 +173,51 @@ def search_sources_csv(query: str, sources_csv_path: str, limit: int = 5) -> lis
     except Exception:
         pass
     return results[:limit]
+
+
+def gather_norm_context(query: str, chroma_dir: str | None = None, sources_csv_path: str | None = None) -> str:
+    """
+    Собирает контекст норм для LLM-промпта из трёх источников: статическая
+    база (get_relevant_norms), ChromaDB (векторный поиск по query, если
+    коллекция заполнена) и sources.csv (поиск по ключевым словам).
+
+    Вынесено из webapp/backend/main.py's /api/model/architect (было
+    инлайновым блоком, дублировать который для нового /api/house/plan не
+    хотелось) — поведение сохранено 1:1, включая молчаливый пропуск ChromaDB
+    при любой ошибке (нет коллекции, пустая база и т.п.).
+    """
+    import os
+
+    static_norms = get_relevant_norms(query)
+
+    chroma_context = ""
+    try:
+        import chromadb
+        from src.config import CHROMA_DB_PATH
+        client = chromadb.PersistentClient(path=str(chroma_dir or CHROMA_DB_PATH))
+        try:
+            col = client.get_collection("uz_construction_norms")
+            if col.count() > 0:
+                results = col.query(query_texts=[query], n_results=min(8, col.count()))
+                docs = results.get("documents", [[]])[0]
+                metas = results.get("metadatas", [[]])[0]
+                if docs:
+                    chroma_context = "\n\nДОПОЛНИТЕЛЬНЫЕ ФРАГМЕНТЫ ИЗ БАЗЫ:\n"
+                    for doc, meta in zip(docs, metas):
+                        src = f"{meta.get('doc_type','')} {meta.get('number','')} п.{meta.get('clauses','')}".strip()
+                        chroma_context += f"\n[{src}]\n{doc[:400]}\n"
+        except Exception:
+            pass
+    except Exception:
+        pass
+
+    csv_path = sources_csv_path or os.path.join(os.path.dirname(__file__), "sources.csv")
+    csv_hits = search_sources_csv(query[:80], csv_path, limit=5)
+    csv_refs = ""
+    if csv_hits:
+        csv_refs = "\n\nРЕЛЕВАНТНЫЕ НОРМАТИВЫ В БАЗЕ:\n" + "\n".join(
+            f"• {r.get('doc_type','')} {r.get('number','')} — {r.get('title','')}"
+            for r in csv_hits
+        )
+
+    return static_norms + chroma_context + csv_refs

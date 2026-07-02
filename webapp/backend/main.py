@@ -506,62 +506,24 @@ class ArchitectRequest(BaseModel):
     floorplan_mode: str = "solver"  # "solver" | "neural" (LM Studio) | "chathousediffusion" (внешний CLI-мост)
 
 
-@app.post("/api/model/architect")
-def model_architect(req: ArchitectRequest):
+def _llm_design_apartment_building(requirements: str, model: str, norms_block: str, temperature: float = 0.2) -> dict:
     """
-    LLM-архитектор двухшаговый пайплайн:
-    1. Собирает нормы (ChromaDB если заполнена + статическая база КМК/ШНК)
-    2. LLM изучает нормы и составляет план здания с цитированием
-    3. Генерирует IFC-модель по плану
+    ШАГ 2+2.5 общего пайплайна «LLM-архитектор» для МНОГОКВАРТИРНЫХ домов:
+    LLM по нормам составляет план здания (этапы, состав подъезда/квартир,
+    лестнично-лифтовой узел, параметры конструкции) → детерминированная
+    проверка норм поверх ответа LLM (не доверяем LLM на слово).
+
+    Вынесено из /api/model/architect, чтобы /api/house/plan (building_kind=
+    "apartment") мог переиспользовать тот же промпт и ту же нормо-проверку,
+    не дублируя ~140 строк системного промпта.
+
+    Возвращает {"data": <сырой JSON от LLM>, "building_params": {...},
+    "building_meta": {...}, "norm_violations": [...]}.
     """
     import requests as req_lib
     from src.config import LM_STUDIO_BASE_URL
-    from src.normbase.norms_knowledge import get_relevant_norms, search_sources_csv
     import re
 
-    if not req.requirements.strip():
-        raise HTTPException(400, "requirements is required")
-
-    # ─── ШАГ 1: Сбор норм ─────────────────────────────────────────────────────
-    static_norms = get_relevant_norms(req.requirements)
-
-    # Дополнительно ищем релевантные документы в ChromaDB
-    chroma_context = ""
-    try:
-        import chromadb
-        client = chromadb.PersistentClient(path=str(CHROMA_DIR))
-        try:
-            col = client.get_collection("uz_construction_norms")
-            if col.count() > 0:
-                results = col.query(
-                    query_texts=[req.requirements],
-                    n_results=min(8, col.count()),
-                )
-                docs = results.get("documents", [[]])[0]
-                metas = results.get("metadatas", [[]])[0]
-                if docs:
-                    chroma_context = "\n\nДОПОЛНИТЕЛЬНЫЕ ФРАГМЕНТЫ ИЗ БАЗЫ:\n"
-                    for doc, meta in zip(docs, metas):
-                        src = f"{meta.get('doc_type','')} {meta.get('number','')} п.{meta.get('clauses','')}".strip()
-                        chroma_context += f"\n[{src}]\n{doc[:400]}\n"
-        except Exception:
-            pass
-    except Exception:
-        pass
-
-    # Поиск релевантных документов в CSV (по ключевым словам)
-    csv_path = str(SRC_DIR / "normbase" / "sources.csv")
-    csv_hits = search_sources_csv(req.requirements[:80], csv_path, limit=5)
-    csv_refs = ""
-    if csv_hits:
-        csv_refs = "\n\nРЕЛЕВАНТНЫЕ НОРМАТИВЫ В БАЗЕ:\n" + "\n".join(
-            f"• {r.get('doc_type','')} {r.get('number','')} — {r.get('title','')}"
-            for r in csv_hits
-        )
-
-    norms_block = static_norms + chroma_context + csv_refs
-
-    # ─── ШАГ 2: LLM разрабатывает план ───────────────────────────────────────
     system_prompt = f"""Ты — опытный архитектор-проектировщик в Узбекистане с 20-летним стажем.
 
 Перед тобой ДЕЙСТВУЮЩИЕ СТРОИТЕЛЬНЫЕ НОРМЫ (КМК/ШНК):
@@ -675,122 +637,173 @@ def model_architect(req: ArchitectRequest):
   }}
 }}"""
 
-    try:
-        resp = req_lib.post(
-            f"{LM_STUDIO_BASE_URL}/chat/completions",
-            json={
-                "model": req.model,
-                "messages": [
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": f"Требования заказчика:\n{req.requirements}"},
-                ],
-                "temperature": 0.2,
-                "max_tokens": 2000,
-            },
-            timeout=120,
+    resp = req_lib.post(
+        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"Требования заказчика:\n{requirements}"},
+            ],
+            "temperature": temperature,
+            "max_tokens": 2000,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+
+    # Извлечь JSON
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if not json_match:
+        raise ValueError("LLM не вернул JSON")
+    data = json.loads(json_match.group())
+
+    p = data.get("params", {})
+    plan = data.get("plan", {})
+    floor_h = float(p.get("floor_height", plan.get("floor_height_m", 3.0)))
+    n_floors = int(p.get("num_floors", plan.get("floor_count", 2)))
+    wall_t = float(p.get("wall_thickness", plan.get("wall_thickness_m", 0.38)))
+
+    building_params = {
+        "name": data.get("name", "Building"),
+        "length": float(p.get("length", 15.0)),
+        "width": float(p.get("width", 12.0)),
+        "height": floor_h * n_floors,
+        "num_floors": n_floors,
+        "wall_thickness": wall_t,
+        "slab_thickness": float(plan.get("slab_thickness_m", 0.20)),
+        "roof_type": p.get("roof_type", "gable"),
+        "add_internal_walls": bool(p.get("add_internal_walls", True)),
+        "add_windows": True,
+        "add_doors": True,
+        "add_columns": bool(p.get("add_columns", False)),
+        "add_beams": True,
+        "add_stairs": bool(n_floors > 1),
+        "add_balconies": bool(p.get("add_balconies", False)),
+        "add_foundation": bool(p.get("add_foundation", True)),
+        "windows_per_wall_long": int(p.get("windows_per_wall_long", 3)),
+        "windows_per_wall_short": int(p.get("windows_per_wall_short", 2)),
+        "window_width": float(p.get("window_width", 1.2)),
+        "window_height": float(p.get("window_height", 1.5)),
+        "window_sill": float(p.get("window_sill", plan.get("window_sill_m", 0.9))),
+        "door_width": float(p.get("door_width", 0.9)),
+        "door_height": float(p.get("door_height", 2.1)),
+    }
+
+    # ─── ШАГ 2.5: Детерминированная проверка норм (не доверяем LLM на слово) ──
+    from src.normbase.validator import validate_and_fix_params, validate_building_meta
+    building_type_str = data.get("building_type", "")
+    building_params, norm_violations = validate_and_fix_params(building_params, building_type_str)
+    n_floors = int(building_params["num_floors"])  # используем уже подрезанное значение
+    building_meta, building_violations = validate_building_meta(data.get("building", {}), n_floors)
+    norm_violations = norm_violations + building_violations
+
+    return {
+        "data": data,
+        "building_params": building_params,
+        "building_meta": building_meta,
+        "norm_violations": norm_violations,
+    }
+
+
+def _build_apartment_ifc(building_params: dict, building_meta: dict, floorplan_mode: str = "solver", llm_model: str = "local-model") -> tuple:
+    """
+    ШАГ 3+4 общего пайплайна: building_params/building_meta (уже проверенные
+    _llm_design_apartment_building) → готовый IFC-файл + проверка целостности.
+    Выбирает между create_apartment_building (многоквартирный, есть подъезды/
+    квартиры на площадке) и create_max_building (иначе) — та же развилка,
+    что раньше была только внутри /api/model/architect.
+
+    Переиспользуется /api/model/architect (генерация сразу) и
+    /api/house/{id}/build-3d (генерация из сохранённого черновика).
+    Возвращает (path, stats, integrity) с уже объединёнными
+    floorplan_issues в integrity["issues"], как и раньше.
+    """
+    from src.ifc_generator import create_max_building, create_apartment_building
+    n_entrances = int(building_meta.get("entrances", 1) or 1)
+    n_apt = int(building_meta.get("apartments_per_landing", 1) or 1)
+    if n_entrances > 1 or n_apt > 1:
+        path, stats = create_apartment_building(
+            name=building_params["name"],
+            num_floors=building_params["num_floors"],
+            floor_height=building_params["height"] / building_params["num_floors"],
+            entrances=n_entrances,
+            apartments_per_landing=n_apt,
+            apartment_rooms=int(building_meta.get("apartment_rooms", 2) or 2),
+            floorplan_mode=floorplan_mode if floorplan_mode in ("solver", "neural", "chathousediffusion") else "solver",
+            llm_model=llm_model,
+            has_elevator=bool(building_meta.get("has_elevator", False)),
+            elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),
+            elevator_capacity_kg=float(building_meta.get("elevator_capacity_kg", 400) or 400),
+            elevator_shaft_m=str(building_meta.get("elevator_shaft_m", "1.8x1.8") or "1.8x1.8"),
+            stair_width_m=float(building_meta.get("stair_width_m", 1.2) or 1.2),
+            riser_shaft_m=str(building_meta.get("riser_shaft_m", "0.4x0.6") or "0.4x0.6"),
+            electrical_niche_m=str(building_meta.get("electrical_niche_m", "0.6x0.9x0.2") or "0.6x0.9x0.2"),
+            wall_thickness=building_params["wall_thickness"],
+            slab_thickness=building_params["slab_thickness"],
+            roof_type=building_params["roof_type"],
+            add_windows=building_params.get("add_windows", True),
+            add_doors=building_params.get("add_doors", True),
+            add_columns=building_params.get("add_columns", True),
+            add_beams=building_params.get("add_beams", True),
+            add_foundation=building_params.get("add_foundation", True),
+            window_width=building_params.get("window_width", 1.2),
+            window_height=building_params.get("window_height", 1.5),
+            window_sill=building_params.get("window_sill", 0.9),
+            door_width=building_params.get("door_width", 0.9),
+            door_height=building_params.get("door_height", 2.1),
         )
-        resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"].strip()
+    else:
+        path, stats = create_max_building(**building_params)
 
-        # Извлечь JSON
-        json_match = re.search(r'\{[\s\S]*\}', raw)
-        if not json_match:
-            raise ValueError("LLM не вернул JSON")
-        data = json.loads(json_match.group())
+    from src.integrity_checker import validate_model_integrity
+    integrity = validate_model_integrity(path)
 
-        p = data.get("params", {})
-        plan = data.get("plan", {})
-        floor_h = float(p.get("floor_height", plan.get("floor_height_m", 3.0)))
-        n_floors = int(p.get("num_floors", plan.get("floor_count", 2)))
-        wall_t = float(p.get("wall_thickness", plan.get("wall_thickness_m", 0.38)))
+    fp_issues = stats.pop("floorplan_issues", [])
+    if fp_issues:
+        integrity["issues"] = fp_issues + integrity["issues"]
+        errors = sum(1 for i in integrity["issues"] if i["severity"] == "error")
+        warnings = sum(1 for i in integrity["issues"] if i["severity"] == "warning")
+        integrity["ok"] = errors == 0
+        integrity["summary"] = f"{errors} ошибок, {warnings} предупреждений"
+        integrity["counts"]["errors"] = errors
+        integrity["counts"]["warnings"] = warnings
 
-        building_params = {
-            "name": data.get("name", "Building"),
-            "length": float(p.get("length", 15.0)),
-            "width": float(p.get("width", 12.0)),
-            "height": floor_h * n_floors,
-            "num_floors": n_floors,
-            "wall_thickness": wall_t,
-            "slab_thickness": float(plan.get("slab_thickness_m", 0.20)),
-            "roof_type": p.get("roof_type", "gable"),
-            "add_internal_walls": bool(p.get("add_internal_walls", True)),
-            "add_windows": True,
-            "add_doors": True,
-            "add_columns": bool(p.get("add_columns", False)),
-            "add_beams": True,
-            "add_stairs": bool(n_floors > 1),
-            "add_balconies": bool(p.get("add_balconies", False)),
-            "add_foundation": bool(p.get("add_foundation", True)),
-            "windows_per_wall_long": int(p.get("windows_per_wall_long", 3)),
-            "windows_per_wall_short": int(p.get("windows_per_wall_short", 2)),
-            "window_width": float(p.get("window_width", 1.2)),
-            "window_height": float(p.get("window_height", 1.5)),
-            "window_sill": float(p.get("window_sill", plan.get("window_sill_m", 0.9))),
-            "door_width": float(p.get("door_width", 0.9)),
-            "door_height": float(p.get("door_height", 2.1)),
-        }
+    return path, stats, integrity
 
-        # ─── ШАГ 2.5: Детерминированная проверка норм (не доверяем LLM на слово) ──
-        from src.normbase.validator import validate_and_fix_params, validate_building_meta
-        building_type_str = data.get("building_type", "")
-        building_params, norm_violations = validate_and_fix_params(building_params, building_type_str)
-        n_floors = int(building_params["num_floors"])  # используем уже подрезанное значение
-        building_meta, building_violations = validate_building_meta(data.get("building", {}), n_floors)
-        norm_violations = norm_violations + building_violations
 
-        # ─── ШАГ 3: Генерация IFC ─────────────────────────────────────────────
-        from src.ifc_generator import create_max_building, create_apartment_building
-        n_entrances = int(building_meta.get("entrances", 1) or 1)
-        n_apt = int(building_meta.get("apartments_per_landing", 1) or 1)
-        if n_entrances > 1 or n_apt > 1:
-            path, stats = create_apartment_building(
-                name=building_params["name"],
-                num_floors=building_params["num_floors"],
-                floor_height=building_params["height"] / building_params["num_floors"],
-                entrances=n_entrances,
-                apartments_per_landing=n_apt,
-                apartment_rooms=int(building_meta.get("apartment_rooms", 2) or 2),
-                floorplan_mode=req.floorplan_mode if req.floorplan_mode in ("solver", "neural", "chathousediffusion") else "solver",
-                llm_model=req.model,
-                has_elevator=bool(building_meta.get("has_elevator", False)),
-                elevators_per_entrance=int(building_meta.get("elevators_per_entrance", 1) or 1),
-                elevator_capacity_kg=float(building_meta.get("elevator_capacity_kg", 400) or 400),
-                elevator_shaft_m=str(building_meta.get("elevator_shaft_m", "1.8x1.8") or "1.8x1.8"),
-                stair_width_m=float(building_meta.get("stair_width_m", 1.2) or 1.2),
-                riser_shaft_m=str(building_meta.get("riser_shaft_m", "0.4x0.6") or "0.4x0.6"),
-                electrical_niche_m=str(building_meta.get("electrical_niche_m", "0.6x0.9x0.2") or "0.6x0.9x0.2"),
-                wall_thickness=building_params["wall_thickness"],
-                slab_thickness=building_params["slab_thickness"],
-                roof_type=building_params["roof_type"],
-                add_windows=building_params.get("add_windows", True),
-                add_doors=building_params.get("add_doors", True),
-                add_columns=building_params.get("add_columns", True),
-                add_beams=building_params.get("add_beams", True),
-                add_foundation=building_params.get("add_foundation", True),
-                window_width=building_params.get("window_width", 1.2),
-                window_height=building_params.get("window_height", 1.5),
-                window_sill=building_params.get("window_sill", 0.9),
-                door_width=building_params.get("door_width", 0.9),
-                door_height=building_params.get("door_height", 2.1),
-            )
-        else:
-            path, stats = create_max_building(**building_params)
+@app.post("/api/model/architect")
+def model_architect(req: ArchitectRequest):
+    """
+    LLM-архитектор двухшаговый пайплайн:
+    1. Собирает нормы (ChromaDB если заполнена + статическая база КМК/ШНК)
+    2. LLM изучает нормы и составляет план здания с цитированием
+    3. Генерирует IFC-модель по плану
+    """
+    from src.normbase.norms_knowledge import gather_norm_context
 
-        # ─── ШАГ 4: Проверка целостности IFC ─────────────────────────────────
-        from src.integrity_checker import validate_model_integrity
-        integrity = validate_model_integrity(path)
+    if not req.requirements.strip():
+        raise HTTPException(400, "requirements is required")
 
-        # Нарушения норм планировки квартир (Путь C, фазы 0-2) — тот же формат
-        # issues, что и integrity_checker; объединяем в одну панель для UI.
-        fp_issues = stats.pop("floorplan_issues", [])
-        if fp_issues:
-            integrity["issues"] = fp_issues + integrity["issues"]
-            errors = sum(1 for i in integrity["issues"] if i["severity"] == "error")
-            warnings = sum(1 for i in integrity["issues"] if i["severity"] == "warning")
-            integrity["ok"] = errors == 0
-            integrity["summary"] = f"{errors} ошибок, {warnings} предупреждений"
-            integrity["counts"]["errors"] = errors
-            integrity["counts"]["warnings"] = warnings
+    # ─── ШАГ 1: Сбор норм (статическая база + ChromaDB + sources.csv) ─────────
+    norms_block = gather_norm_context(
+        req.requirements, chroma_dir=str(CHROMA_DIR), sources_csv_path=str(SRC_DIR / "normbase" / "sources.csv"),
+    )
+
+    try:
+        # ─── ШАГ 2+2.5: LLM разрабатывает план + проверка норм ────────────────
+        design = _llm_design_apartment_building(req.requirements, req.model, norms_block)
+        data = design["data"]
+        building_params = design["building_params"]
+        building_meta = design["building_meta"]
+        norm_violations = design["norm_violations"]
+
+        # ─── ШАГ 3+4: Генерация IFC + проверка целостности ────────────────────
+        path, stats, integrity = _build_apartment_ifc(
+            building_params, building_meta,
+            floorplan_mode=req.floorplan_mode, llm_model=req.model,
+        )
 
         return {
             "ok": True,
@@ -811,6 +824,244 @@ def model_architect(req: ArchitectRequest):
         }
     except Exception as e:
         raise _server_error(e, "Ошибка работы AI-архитектора")
+
+
+# ═══════════════════════════════════════════
+#  Новый мастер «Моделирование»: частный дом / многоквартирный дом
+#  Двухшаговый флоу: 2D-план (с перегенерацией) → сохранить → 3D-модель.
+# ═══════════════════════════════════════════
+
+class HousePlanRequest(BaseModel):
+    building_kind: str = Field(..., pattern="^(house|apartment)$")
+    description: str = Field(..., min_length=1, max_length=4000)
+    model: str = "local-model"
+    check_norms: bool = True
+    # >0 — обязательное условие того, чтобы повторный вызов с тем же
+    # описанием ("перегенерировать" во фронте) дал другой результат —
+    # отдельного флага regenerate не нужно, это просто новый LLM-вызов.
+    temperature: float = Field(0.5, ge=0.0, le=1.5)
+
+
+class HousePlanSaveRequest(BaseModel):
+    building_kind: str = Field(..., pattern="^(house|apartment)$")
+    name: str = Field("Проект", max_length=200)
+    description: str = Field("", max_length=4000)
+    program: dict
+    floorplan: dict
+    norms_issues: list = Field(default_factory=list)
+    norms_citations: str = Field("", max_length=20000)
+
+
+def _bbox_area(polygon: list) -> float:
+    xs = [p[0] for p in polygon]
+    ys = [p[1] for p in polygon]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def _generate_house_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float) -> tuple:
+    """building_kind="house": текст → BuildingProgram (LLM) → FloorPlan
+    (treemap-солвер, src/bim_agents/) → SVG по этажам + проверка норм."""
+    import requests as req_lib
+    import re
+    from src.config import LM_STUDIO_BASE_URL
+    from src.bim_agents.architect_agent import ARCHITECT_PROMPT
+    from src.bim_agents.floorplan_agent import generate_floor_plan
+    from src.bim_agents.contracts import BuildingProgram
+    from src.floor_plan_render import render_storey_svg
+    from src.house_norms import validate_house_plan
+
+    system_prompt = ARCHITECT_PROMPT
+    if norms_block:
+        system_prompt += (
+            "\n\nДЕЙСТВУЮЩИЕ СТРОИТЕЛЬНЫЕ НОРМЫ (КМК/ШНК) — учитывай при площадях "
+            f"и составе помещений:\n{norms_block}"
+        )
+
+    resp = req_lib.post(
+        f"{LM_STUDIO_BASE_URL}/chat/completions",
+        json={
+            "model": model,
+            "messages": [
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": description},
+            ],
+            "temperature": temperature,
+            "max_tokens": 2000,
+        },
+        timeout=120,
+    )
+    resp.raise_for_status()
+    raw = resp.json()["choices"][0]["message"]["content"].strip()
+    json_match = re.search(r'\{[\s\S]*\}', raw)
+    if not json_match:
+        raise ValueError("LLM не вернул JSON")
+    data = json.loads(json_match.group())
+    program = BuildingProgram(**data)
+
+    # Инженерные пределы — тот же DoS-паттерн, что и для BuildingParams/
+    # LLM-сметы: не даём одной генерацией создать неограниченно большой план.
+    if len(program.rooms) > 60:
+        raise ValueError(f"Слишком много помещений в ответе модели ({len(program.rooms)} > 60)")
+    if program.storeys > 30:
+        raise ValueError(f"Слишком много этажей в ответе модели ({program.storeys} > 30)")
+
+    floor_plan = generate_floor_plan(program)
+
+    floors = []
+    for storey in floor_plan.storeys:
+        area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
+        floors.append({
+            "level": storey.level,
+            "label": f"Этаж {storey.level}",
+            "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+            "area_m2": round(area, 1),
+        })
+
+    norms_issues = validate_house_plan(program, floor_plan) if check_norms else []
+    raw_program = {"building_program": program.model_dump()}
+    raw_floorplan = floor_plan.model_dump()
+
+    return floors, norms_issues, raw_program, raw_floorplan, program.project_name
+
+
+def _generate_apartment_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float) -> tuple:
+    """building_kind="apartment": переиспользует существующий LLM-архитектор
+    (_llm_design_apartment_building) + существующий src/floorplan-солвер —
+    но останавливается на 2D-превью, не сразу строя IFC (в отличие от
+    /api/model/architect)."""
+    from dataclasses import asdict
+    from src.floorplan import generate_floorplan, validate_floorplan
+    from src.floor_plan_render import render_apartment_floor_svg
+
+    design = _llm_design_apartment_building(description, model, norms_block, temperature=temperature)
+    data = design["data"]
+    building_params = design["building_params"]
+    building_meta = design["building_meta"]
+
+    # apt_width/apt_depth — те же дефолты, что create_apartment_building
+    # использует всегда (архитектор их не варьирует и сегодня — см.
+    # /api/model/architect, где apt_width/apt_depth не передаются явно).
+    apt_width, apt_depth = 8.5, 11.0
+    apt_inner_depth = max(1.0, apt_depth - 2 * building_params["wall_thickness"])
+    room_count = int(building_meta.get("apartment_rooms", 2) or 2)
+
+    fp_west = generate_floorplan(width=apt_width, depth=apt_inner_depth, room_count=room_count, entry_side="west")
+    fp_east = generate_floorplan(width=apt_width, depth=apt_inner_depth, room_count=room_count, entry_side="east")
+
+    # "Альбом" здесь — не буквально N одинаковых этажей здания (планировка
+    # квартиры повторяется на каждом типовом этаже), а левая/правая типовая
+    # квартира лестничной площадки — то, что реально меняется в плане.
+    floors = [
+        {"level": 0, "label": "Квартира — вход с запада", "svg": render_apartment_floor_svg(fp_west, "Квартира (запад)"), "area_m2": fp_west.total_area()},
+        {"level": 1, "label": "Квартира — вход с востока", "svg": render_apartment_floor_svg(fp_east, "Квартира (восток)"), "area_m2": fp_east.total_area()},
+    ]
+
+    norms_issues = (validate_floorplan(fp_west) + validate_floorplan(fp_east)) if check_norms else []
+    raw_program = {"building_params": building_params, "building_meta": building_meta}
+    raw_floorplan = {"west": asdict(fp_west), "east": asdict(fp_east)}
+
+    return floors, norms_issues, raw_program, raw_floorplan, data.get("name", "Building")
+
+
+@app.post("/api/house/plan")
+def house_plan_generate(req: HousePlanRequest):
+    """
+    Генерация 2D-плана (без 3D) для нового мастера «Моделирование».
+    Повторный вызов с тем же description — это и есть «перегенерировать»
+    (temperature > 0 даёт другой результат на том же входе).
+    """
+    from src.normbase.norms_knowledge import gather_norm_context
+
+    if not req.description.strip():
+        raise HTTPException(400, "description is required")
+
+    norms_block = ""
+    if req.check_norms:
+        norms_block = gather_norm_context(
+            req.description, chroma_dir=str(CHROMA_DIR), sources_csv_path=str(SRC_DIR / "normbase" / "sources.csv"),
+        )
+
+    try:
+        gen = _generate_house_plan if req.building_kind == "house" else _generate_apartment_plan
+        floors, norms_issues, raw_program, raw_floorplan, summary = gen(
+            req.description, req.model, norms_block, req.check_norms, req.temperature,
+        )
+    except Exception as e:
+        raise _server_error(e, "Ошибка генерации плана")
+
+    return {
+        "building_kind": req.building_kind,
+        "summary": summary,
+        "floors": floors,
+        "norms_issues": norms_issues,
+        "norms_citations": norms_block,
+        "raw_program": raw_program,
+        "raw_floorplan": raw_floorplan,
+    }
+
+
+@app.post("/api/house/save")
+def house_plan_save(req: HousePlanSaveRequest):
+    """Сохраняет черновик плана (после «мне нравится этот вариант»)."""
+    from src.house_plan_store import create_house_plan
+    plan_id = create_house_plan(
+        building_kind=req.building_kind, name=req.name, description=req.description,
+        program=req.program, floorplan=req.floorplan,
+        norms_issues=req.norms_issues, norms_citations=req.norms_citations,
+    )
+    return {"plan_id": plan_id}
+
+
+@app.get("/api/house/{plan_id}")
+def house_plan_get(plan_id: int):
+    from src.house_plan_store import get_house_plan
+    plan = get_house_plan(plan_id)
+    if not plan:
+        raise HTTPException(404, "План не найден")
+    return plan
+
+
+@app.post("/api/house/{plan_id}/build-3d")
+def house_plan_build_3d(plan_id: int):
+    """Строит IFC-модель из сохранённого (проверенного) плана."""
+    from src.house_plan_store import get_house_plan
+    plan = get_house_plan(plan_id)
+    if not plan:
+        raise HTTPException(404, "План не найден")
+
+    try:
+        if plan["building_kind"] == "house":
+            from src.bim_agents.contracts import BuildingProgram, FloorPlan
+            from src.bim_agents.bim_agent import generate_ifc
+            from src.integrity_checker import validate_model_integrity
+
+            program = BuildingProgram(**plan["program"]["building_program"])
+            floor_plan = FloorPlan(**plan["floorplan"])
+            path, stats = generate_ifc(floor_plan)
+            integrity = validate_model_integrity(path)
+
+            fp_issues = plan.get("norms_issues") or []
+            if fp_issues:
+                integrity["issues"] = fp_issues + integrity["issues"]
+                errors = sum(1 for i in integrity["issues"] if i["severity"] == "error")
+                warnings = sum(1 for i in integrity["issues"] if i["severity"] == "warning")
+                integrity["ok"] = errors == 0
+                integrity["summary"] = f"{errors} ошибок, {warnings} предупреждений"
+                integrity["counts"]["errors"] = errors
+                integrity["counts"]["warnings"] = warnings
+        else:
+            building_params = plan["program"]["building_params"]
+            building_meta = plan["program"]["building_meta"]
+            path, stats, integrity = _build_apartment_ifc(building_params, building_meta)
+    except Exception as e:
+        raise _server_error(e, "Ошибка генерации 3D-модели")
+
+    return {
+        "filename": os.path.basename(path),
+        "download_url": f"/api/model/download/{os.path.basename(path)}",
+        "stats": stats,
+        "integrity": integrity,
+    }
 
 
 @app.post("/api/model/bim-generate")

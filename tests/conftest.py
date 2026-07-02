@@ -42,3 +42,17 @@ def cleanup_pricing():
         cur.execute(f"DELETE FROM {table} WHERE id = ?", (row_id,))
     conn.commit()
     conn.close()
+
+
+@pytest.fixture
+def cleanup_house_plans():
+    """Удаляет тестовые черновики планов (частный/многоквартирный дом) из
+    общей SQLite-базы после теста."""
+    from src.house_plan_store import delete_house_plan
+    ids: list[int] = []
+    yield ids
+    for plan_id in ids:
+        try:
+            delete_house_plan(plan_id)
+        except Exception:
+            pass

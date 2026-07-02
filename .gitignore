@@ -30,6 +30,7 @@ data/chroma_db/
 data/normbase_raw/
 data/normbase_text/
 data/normbase_cache/
+data/house_plans/
 output/
 *.zip
 *.log
