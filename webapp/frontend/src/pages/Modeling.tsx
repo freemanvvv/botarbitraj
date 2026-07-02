@@ -47,7 +47,6 @@ export default function Modeling() {
   const [model, setModel] = useState("local-model");
 
   const [planLoading, setPlanLoading] = useState(false);
-  const [planError, setPlanError] = useState("");
   const [lastDescription, setLastDescription] = useState("");
   const [plan, setPlan] = useState<PlanResponse | null>(null);
   const [page, setPage] = useState(0);
@@ -77,13 +76,12 @@ export default function Modeling() {
   const resetForNewObject = () => {
     setMessages([]); setInput(""); setPlan(null); setPage(0);
     setSavedPlanId(null); setStats(null); setSelectedFile(null);
-    setRightView("album"); setPlanError(""); setBuild3dError("");
+    setRightView("album"); setBuild3dError("");
   };
 
   const generatePlan = async (description: string) => {
     if (!description.trim() || !buildingKind) return;
     setPlanLoading(true);
-    setPlanError("");
     try {
       const res = await fetch(`${API}/api/house/plan`, {
         method: "POST",
@@ -103,7 +101,6 @@ export default function Modeling() {
         : `Готово: «${d.summary}», ${d.floors.length} этаж(а/ей). Нарушений норм не найдено.`;
       setMessages(prev => [...prev, { role: "bot", content: summary }]);
     } catch (e: any) {
-      setPlanError(e.message);
       setMessages(prev => [...prev, { role: "bot", content: `❌ ${e.message}` }]);
     } finally {
       setPlanLoading(false);
@@ -276,8 +273,9 @@ export default function Modeling() {
             <>
               <ThreeViewer filename={selectedFile} />
               <div style={{ position: "absolute", top: 10, left: 10, zIndex: 5, display: "flex", gap: 6 }}>
-                <button className={`toggle-btn ${rightView === "album" ? "active" : ""}`} onClick={() => setRightView("album")}>📐 План</button>
-                <button className={`toggle-btn ${rightView === "3d" ? "active" : ""}`} onClick={() => setRightView("3d")}>🧱 3D</button>
+                {/* rightView is narrowed to "3d" in this branch — "План" is never active here */}
+                <button className="toggle-btn" onClick={() => setRightView("album")}>📐 План</button>
+                <button className="toggle-btn active" onClick={() => setRightView("3d")}>🧱 3D</button>
               </div>
             </>
           ) : plan && floor ? (
