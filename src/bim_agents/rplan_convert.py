@@ -3,10 +3,17 @@
 
 RPLAN (Wu et al., "Data-driven Interior Plan Generation for Residential
 Buildings", SIGGRAPH Asia 2019) — ~80k реальных планов квартир, каждый как
-4-канальный PNG 256×256. Стандартная раскладка каналов (rplan-toolbox /
-rplanpy): [boundary, category, instance, inside]. Каналы category/instance
-дают попиксельный тип комнаты и её экземпляр; таксономия 18 классов — та же,
-что уже задокументирована в src/floorplan/vectorize.py.
+4-канальный PNG 256×256. Раскладка каналов и таксономия 18 классов сверены
+с эталонным ридером rplanpy (rplanpy.data.RplanData / rplanpy.utils.
+ROOM_CLASS): каналы [boundary, category, instance, inside]; комнаты —
+regionprops по instance с типом = мода category внутри экземпляра; передняя
+дверь — boundary==255. Тот же список классов задокументирован и в
+src/floorplan/vectorize.py.
+
+Датасет открыт (зеркала на Kaggle/Zenodo/GitHub-релизах, ридер
+`pip install rplanpy`), но политика сети этого окружения пускает только
+пакетные реестры, поэтому скачивание/прогон по реальным данным делается на
+вашей машине (см. CLI ниже), а не здесь.
 
 Наш движок (layout_templates.py) умеет работать только с ПРЯМОУГОЛЬНОЙ
 мозаикой (x_cuts/y_cuts + комнаты-прямоугольники, без щелей и наложений).
@@ -71,6 +78,11 @@ RPLAN_CLASS_TO_CATEGORY: dict[int, str | None] = {
     # 17 InteriorDoor — не комнаты
 }
 RPLAN_FRONT_DOOR = 15
+# В канонической раскладке RPLAN (rplanpy.data.RplanData) передняя дверь
+# кодируется в канале boundary значением 255, а не классом 15 в канале
+# category. Ориентацию делаем по boundary==255, если он передан, иначе —
+# запасной путь по category==15.
+RPLAN_BOUNDARY_FRONT_DOOR = 255
 
 _RU_CAT = {
     "living": "гостиная", "bedroom": "спальня", "kitchen": "кухня",
@@ -103,25 +115,35 @@ def _room_masks_by_instance(category: np.ndarray, instance: np.ndarray, min_room
     return rooms
 
 
-def _orient_entry_to_top(category: np.ndarray, instance: np.ndarray):
-    """Поворотом на k·90° приводит фасад со входом (FrontDoor) к y=0 (верх).
+def _orient_entry_to_top(category: np.ndarray, instance: np.ndarray, boundary: np.ndarray | None = None):
+    """Поворотом на k·90° приводит фасад со входом к y=0 (верх).
 
-    Возвращает (category, instance, k). Без FrontDoor — k=0."""
-    fmask = category == RPLAN_FRONT_DOOR
-    if not fmask.any():
+    Передняя дверь берётся из boundary==255 (канонический способ RPLAN,
+    см. rplanpy.data.RplanData.get_front_door_mask), а при отсутствии
+    boundary — из category==15. Возвращает (category, instance, k). Без
+    двери — k=0."""
+    if boundary is not None and (boundary == RPLAN_BOUNDARY_FRONT_DOOR).any():
+        door_of = lambda c, b: b == RPLAN_BOUNDARY_FRONT_DOOR
+        src = boundary
+    elif (category == RPLAN_FRONT_DOOR).any():
+        door_of = lambda c, b: c == RPLAN_FRONT_DOOR
+        src = category
+    else:
         return category, instance, 0
+
     best_k, best_score = 0, None
     for k in range(4):
-        cat_r = np.rot90(category, k)
-        f_r = cat_r == RPLAN_FRONT_DOOR
+        f_r = door_of(np.rot90(category, k), np.rot90(src, k))
         rows, _cols = np.where(f_r)
         # доля центроида двери от верха по высоте плана: чем меньше — тем
         # ближе вход к y=0.
-        score = (rows.mean() - 0) / max(cat_r.shape[0], 1)
+        score = rows.mean() / max(f_r.shape[0], 1)
         if best_score is None or score < best_score:
             best_k, best_score = k, score
     if best_k == 0:
         return category, instance, 0
+    # boundary дальше не нужен (использовался только для ориентации), поэтому
+    # не поворачиваем и не возвращаем — экономим массив.
     return np.rot90(category, best_k), np.rot90(instance, best_k), best_k
 
 
@@ -213,18 +235,22 @@ def image_to_template(
     instance: np.ndarray,
     *,
     source_id: str,
+    boundary: np.ndarray | None = None,
     snap_tol_px: int = 4,
     min_room_px: int = 40,
     min_iou: float = 0.7,
 ) -> dict | None:
-    """RPLAN (category+instance каналы) → шаблон mosaic-формата или None.
+    """RPLAN (category+instance каналы, опц. boundary) → шаблон mosaic-формата
+    или None.
 
-    None — план не выражается чистой прямоугольной мозаикой (L-образные
-    комнаты, щели, слишком грубое приближение). Это ожидаемо для большой
-    доли RPLAN и не является ошибкой."""
+    boundary (канал 0) используется только для ориентации входа (front door
+    = 255). None — план не выражается чистой прямоугольной мозаикой
+    (L-образные комнаты, щели, слишком грубое приближение). Это ожидаемо для
+    большой доли RPLAN и не является ошибкой."""
     category = np.asarray(category)
     instance = np.asarray(instance)
-    category, instance, _k = _orient_entry_to_top(category, instance)
+    boundary = np.asarray(boundary) if boundary is not None else None
+    category, instance, _k = _orient_entry_to_top(category, instance, boundary)
 
     rooms = _room_masks_by_instance(category, instance, min_room_px)
     if len(rooms) < 2:
@@ -279,19 +305,21 @@ def _signature(tpl: dict) -> tuple:
     return (cats, xs, ys, cells)
 
 
-def load_rplan_png(path: str, category_channel: int = 1, instance_channel: int = 2):
-    """4-канальный RPLAN PNG → (category, instance) 2D-массивы.
+def load_rplan_png(path: str, category_channel: int = 1, instance_channel: int = 2,
+                   boundary_channel: int = 0):
+    """4-канальный RPLAN PNG → (category, instance, boundary) 2D-массивы.
 
-    Дефолты каналов — стандартная раскладка rplan-toolbox
+    Дефолты каналов — каноническая раскладка RPLAN (rplanpy.data.RplanData):
     [boundary, category, instance, inside]. Если ваша копия хранит каналы
     иначе — задайте индексы явно (флаги CLI --category-channel/--instance-
-    channel)."""
+    channel). boundary нужен только для ориентации входа (front door = 255)."""
     from PIL import Image
 
     arr = np.asarray(Image.open(path))
-    if arr.ndim != 3 or arr.shape[2] <= max(category_channel, instance_channel):
+    need = max(category_channel, instance_channel, boundary_channel)
+    if arr.ndim != 3 or arr.shape[2] <= need:
         raise ValueError(f"{path}: ожидался многоканальный PNG, получено shape={arr.shape}")
-    return arr[..., category_channel], arr[..., instance_channel]
+    return arr[..., category_channel], arr[..., instance_channel], arr[..., boundary_channel]
 
 
 def convert_dir(
@@ -313,11 +341,11 @@ def convert_dir(
     for fname in files:
         stats["total"] += 1
         try:
-            category, instance = load_rplan_png(
+            category, instance, boundary = load_rplan_png(
                 os.path.join(input_dir, fname), category_channel, instance_channel)
             tpl = image_to_template(
                 category, instance, source_id=os.path.splitext(fname)[0],
-                snap_tol_px=snap_tol_px, min_iou=min_iou)
+                boundary=boundary, snap_tol_px=snap_tol_px, min_iou=min_iou)
         except Exception:
             stats["error"] += 1
             continue

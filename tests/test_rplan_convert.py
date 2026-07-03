@@ -76,6 +76,23 @@ def test_front_door_orients_entry_to_y0():
     assert any(r["cy0"] == 0 for r in tpl["rooms"])
 
 
+def test_front_door_from_boundary_channel_orients_entry():
+    """Каноническая RPLAN-разметка кладёт переднюю дверь в канал boundary
+    (=255), а не классом 15 в category (см. rplanpy). Конвертер должен
+    ориентировать вход по boundary, когда он передан."""
+    category, instance = _blank()
+    # living сверху, kitchen снизу; front door в boundary у ВЕРХНЕЙ грани
+    _put(category, instance, 0, 1, 4, 4, 60, 32)   # living, верх
+    _put(category, instance, 2, 2, 4, 32, 60, 60)  # kitchen, низ
+    boundary = np.zeros_like(category)
+    boundary[4:6, 20:24] = 255  # вход у верхней грани → останется при y=0
+    tpl = image_to_template(category, instance, source_id="bnd", boundary=boundary, min_iou=0.7)
+    assert tpl is not None
+    # вход уже сверху → без поворота: living должна остаться примыкающей к y=0
+    living = [r for r in tpl["rooms"] if r["category"] == "living"][0]
+    assert living["cy0"] == 0
+
+
 def test_rplan_categories_map_to_our_vocabulary():
     category, instance = _blank()
     _put(category, instance, 1, 1, 4, 4, 32, 60)   # MasterRoom -> bedroom
