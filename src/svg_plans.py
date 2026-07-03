@@ -14,13 +14,17 @@ from .config import OUTPUT_DIR
 
 @dataclass
 class Room:
-    """Помещение на плане."""
+    """Помещение на плане. x,y,width,height — bbox (для подписи/легенды);
+    polygon — точный контур, если он не прямоугольный (Г-образные комнаты из
+    шаблонов датасета) — иначе заливка рисуется по bbox как раньше, а полигон
+    не нужен."""
     name: str
     x: float
     y: float
     width: float
     height: float
     color: str = "#e8f4f8"
+    polygon: list[list[float]] | None = None
 
 
 @dataclass
@@ -71,6 +75,18 @@ def _fmt_mm(dist_m: float) -> str:
     return " ".join(groups)
 
 
+def _shoelace_area(polygon: list[list[float]]) -> float:
+    """Площадь простого многоугольника (для непрямоугольных комнат — bbox
+    здесь давал бы завышенную площадь)."""
+    s = 0.0
+    n = len(polygon)
+    for i in range(n):
+        x1, y1 = polygon[i]
+        x2, y2 = polygon[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return abs(s) / 2
+
+
 class SVGPlanGenerator:
     """
     Генератор дименсированного плана этажа в SVG.
@@ -84,8 +100,9 @@ class SVGPlanGenerator:
         self.doors: list[Door] = []
         self.windows: list[Window] = []
 
-    def add_room(self, name: str, x: float, y: float, w: float, h: float) -> Room:
-        room = Room(name, x, y, w, h)
+    def add_room(self, name: str, x: float, y: float, w: float, h: float,
+                 polygon: list[list[float]] | None = None) -> Room:
+        room = Room(name, x, y, w, h, polygon=polygon)
         self.rooms.append(room)
         return room
 
@@ -302,14 +319,22 @@ class SVGPlanGenerator:
             svg += f'<line class="grid" x1="{plan_left:.1f}" y1="{sy(gy):.1f}" x2="{plan_right:.1f}" y2="{sy(gy):.1f}"/>\n'
 
         # Rooms — подпись ближе к верху комнаты (не по центру), чтобы не
-        # накладываться на дверные проёмы посреди стен.
+        # накладываться на дверные проёмы посреди стен. Непрямоугольные
+        # комнаты (Г-образные из шаблонов датасета) рисуются по точному
+        # контуру (<polygon>), а не по bbox — иначе заливка перекрыла бы
+        # соседнюю комнату в вырезе формы.
         for room in self.rooms:
             rx, ry = sx(room.x), sy(room.y)
             rw, rh = self._s(room.width), self._s(room.height)
-            svg += f'<rect class="room-fill" x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" rx="2"/>\n'
+            if room.polygon:
+                pts = " ".join(f"{sx(px):.1f},{sy(py):.1f}" for px, py in room.polygon)
+                svg += f'<polygon class="room-fill" points="{pts}"/>\n'
+                area = _shoelace_area(room.polygon)
+            else:
+                svg += f'<rect class="room-fill" x="{rx:.1f}" y="{ry:.1f}" width="{rw:.1f}" height="{rh:.1f}" rx="2"/>\n'
+                area = room.width * room.height
             label_y = ry + min(28, rh * 0.3)
             svg += f'<text class="label" x="{rx + rw / 2:.1f}" y="{label_y:.1f}">{room.name}</text>\n'
-            area = room.width * room.height
             svg += f'<text class="dim" x="{rx + rw / 2:.1f}" y="{label_y + 12:.1f}">{area:.2f} м²</text>\n'
 
         # Walls — с вырезанными проёмами (дверь/окно), а не сплошной линией

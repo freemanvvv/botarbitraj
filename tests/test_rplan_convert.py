@@ -117,16 +117,34 @@ def test_balcony_and_walls_are_dropped():
     assert all(r["category"] in ("living", "kitchen") for r in tpl["rooms"])
 
 
-def test_L_shaped_room_is_rejected():
-    """L-образная комната: её bbox накрывает соседнюю → не slicing-раскладка,
-    план честно отклоняется (наш формат не умеет непрямоугольные комнаты)."""
+def test_L_shaped_room_is_accepted_via_pixel_mask_ownership():
+    """Г-образная комната на PNG-пути (маска instance — точная форма, без
+    неоднозначности) теперь ПРИНИМАЕТСЯ, а не отклоняется: владение ячейками
+    решается голосованием пикселей внутри каждой ячейки, поэтому комната
+    может занимать несколько несмежных-по-прямоугольнику ячеек. Это и есть
+    поддержка непрямоугольных форм — она возможна только для маскового
+    (PNG) пути; box-путь (Graph2Plan) такой неоднозначности разрешить не
+    может (см. _build_mosaic) и по-прежнему требует одного прямоугольника."""
     category, instance = _blank()
     # L-образная гостиная (инстанс 1) огибает угол
     _put(category, instance, 0, 1, 4, 4, 60, 34)    # верхняя широкая полоса
     _put(category, instance, 0, 1, 4, 34, 34, 60)   # + левая ножка вниз
     _put(category, instance, 2, 2, 34, 34, 60, 60)  # кухня в правом-нижнем углу
     tpl = image_to_template(category, instance, source_id="Lshape", min_iou=0.7)
-    assert tpl is None
+    assert tpl is not None
+    living = next(r for r in tpl["rooms"] if r["category"] == "living")
+    kitchen = next(r for r in tpl["rooms"] if r["category"] == "kitchen")
+    assert "cells" in living and len(living["cells"]) >= 2   # Г-форма — несколько прямоугольников
+    assert "cx0" in kitchen and "cells" not in kitchen        # кухня осталась простым прямоугольником
+
+    # мозаика по-прежнему без наложений и щелей: суммарная площадь ячеек = 1.0
+    xs, ys = tpl["x_cuts"], tpl["y_cuts"]
+    total = 0.0
+    for r in tpl["rooms"]:
+        rects = r["cells"] if "cells" in r else [[r["cx0"], r["cx1"], r["cy0"], r["cy1"]]]
+        for cx0, cx1, cy0, cy1 in rects:
+            total += (xs[cx1] - xs[cx0]) * (ys[cy1] - ys[cy0])
+    assert abs(total - 1.0) < 1e-6
 
 
 def test_gap_in_layout_is_rejected():

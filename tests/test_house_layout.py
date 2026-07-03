@@ -210,3 +210,58 @@ def test_template_refit_respects_footprint_exactly():
         ys = [p[1] for rp in storey.rooms for p in rp.polygon]
         assert min(xs) == 0.0 and abs(max(xs) - 11.0) < 1e-6
         assert min(ys) == 0.0 and abs(max(ys) - 9.0) < 1e-6
+
+
+def test_L_shaped_template_from_rplan_survives_full_pipeline(monkeypatch):
+    """Г-образный шаблон (полученный конвертером с PNG-пути RPLAN — см.
+    tests/test_rplan_convert.py::test_L_shaped_room_is_accepted_via_pixel_mask_ownership)
+    должен пройти весь house-движок: apply_template → стены → проёмы → IFC,
+    без вырожденной геометрии и с валидной тесселяцией."""
+    import numpy as np
+    from src.bim_agents.rplan_convert import image_to_template
+    from src.bim_agents import layout_templates
+    from src.bim_agents.bim_agent import generate_ifc
+
+    category = np.full((64, 64), 13, dtype=np.int32)
+    instance = np.zeros((64, 64), dtype=np.int32)
+    category[4:34, 4:60] = 0; instance[4:34, 4:60] = 1     # living, верхняя полоса
+    category[34:60, 4:34] = 0; instance[34:60, 4:34] = 1   # living, левая ножка вниз (та же комната)
+    category[34:60, 34:60] = 2; instance[34:60, 34:60] = 2  # kitchen в правом-нижнем углу
+    tpl = image_to_template(category, instance, source_id="Ltest", min_iou=0.7)
+    assert tpl is not None
+    assert any("cells" in r for r in tpl["rooms"])
+
+    program = BuildingProgram(
+        project_name="Т", storeys=1, footprint={"width_m": 10, "depth_m": 9},
+        rooms=[
+            Room(id="liv", name="Гостиная", storey=0, area_m2=50, type="IfcSpace:LIVING", min_width_m=3.0),
+            Room(id="kit", name="Кухня", storey=0, area_m2=15, type="IfcSpace:KITCHEN", min_width_m=2.5),
+        ],
+    )
+    monkeypatch.setattr(layout_templates, "load_templates", lambda: [tpl])
+    fp = generate_floor_plan(program)
+
+    liv_poly = next(rp.polygon for rp in fp.storeys[0].rooms if rp.id == "liv")
+    kit_poly = next(rp.polygon for rp in fp.storeys[0].rooms if rp.id == "kit")
+    assert len(liv_poly) == 6  # Г-форма — шестиугольник, не 4-угольник
+    assert len(kit_poly) == 4
+
+    # площадь Г-образного полигона (shoelace) не должна выродиться
+    def shoelace(poly):
+        s = 0.0
+        for i in range(len(poly)):
+            x1, y1 = poly[i]; x2, y2 = poly[(i + 1) % len(poly)]
+            s += x1 * y2 - x2 * y1
+        return abs(s) / 2
+    assert shoelace(liv_poly) > 20.0
+
+    path, stats = generate_ifc(fp, output_dir="/tmp")
+    assert stats["walls"] > 0 and stats["spaces"] == 2
+
+    import ifcopenshell, ifcopenshell.geom
+    ifc = ifcopenshell.open(path)
+    settings = ifcopenshell.geom.settings()
+    settings.set("use-world-coords", True)
+    for t in ("IfcWall", "IfcSlab", "IfcSpace", "IfcWindow", "IfcDoor"):
+        for p in ifc.by_type(t):
+            ifcopenshell.geom.create_shape(settings, p)  # не должно бросать

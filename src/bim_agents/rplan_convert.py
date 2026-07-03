@@ -173,12 +173,62 @@ def _snap_edges(values: list[int], tol: int) -> tuple[list[int], dict[int, int]]
     return cuts, mapping
 
 
-def _build_mosaic(rooms, snap_tol: int):
-    """Рёбра bbox'ов → сетка разрезов + прямоугольник ячеек на комнату.
+def _cells_to_rects(cells: list[tuple[int, int]]) -> list[tuple[int, int, int, int]]:
+    """Список занимаемых ячеек (i,j) → компактный набор прямоугольников
+    (ix0,ix1,iy0,iy1): построчные горизонтальные прогоны, затем слияние
+    одинаковых прогонов по соседним строкам. Для комнаты, занимающей ОДИН
+    прямоугольник (обычный случай), всегда даёт ровно один rect — это и
+    определяет, эмитить ли старую схему (cx0..cy1) или новую ("cells";
+    L-образные/ступенчатые комнаты — несколько прямоугольников)."""
+    by_row: dict[int, list[int]] = {}
+    for i, j in cells:
+        by_row.setdefault(j, []).append(i)
+    row_runs: dict[int, list[tuple[int, int]]] = {}
+    for j, idxs in by_row.items():
+        idxs = sorted(idxs)
+        runs, start, prev = [], idxs[0], idxs[0]
+        for i in idxs[1:]:
+            if i == prev + 1:
+                prev = i
+                continue
+            runs.append((start, prev + 1))
+            start = prev = i
+        runs.append((start, prev + 1))
+        row_runs[j] = runs
 
-    Бросает _Rejected, если раскладка не мозаична (щели/наложения/непрямо-
-    угольные комнаты). Возвращает (x_cuts_px, y_cuts_px, cell_ranges), где
-    cell_ranges[i] = (ix0, ix1, iy0, iy1) — индексы разрезов комнаты i."""
+    used: set[tuple[int, tuple[int, int]]] = set()
+    rects = []
+    for j in sorted(row_runs):
+        for run in row_runs[j]:
+            if (j, run) in used:
+                continue
+            j1 = j + 1
+            while j1 in row_runs and run in row_runs[j1] and (j1, run) not in used:
+                used.add((j1, run))
+                j1 += 1
+            used.add((j, run))
+            rects.append((run[0], run[1], j, j1))
+    return rects
+
+
+def _build_mosaic(rooms, snap_tol: int):
+    """Рёбра bbox'ов → сетка разрезов + ячейки, занятые каждой комнатой.
+
+    Владение ячейками решается по-разному для двух источников данных:
+      • комнаты С МАСКОЙ (PNG-путь, канал instance) — каждый пиксель уже
+        однозначно принадлежит одной комнате (сегментация), поэтому ячейка
+        отдаётся комнате большинством голосов её пикселей внутри ячейки; так
+        комната может владеть НЕСКОЛЬКИМИ несмежными-по-прямоугольнику
+        ячейками — это и есть поддержка Г-образных/ступенчатых форм.
+      • комнаты БЕЗ маски (Graph2Plan-боксы) — bbox УЖЕ является заявленной
+        формой комнаты (не приближение), поэтому владение строго
+        эксклюзивно-прямоугольное, как раньше: наложение боксов — отказ, а
+        не L-форма, потому что box-формат не говорит, чья это область на
+        самом деле (в отличие от честного попиксельного instance).
+
+    Бросает _Rejected, если раскладка не мозаична (щели/непокрытые ячейки/
+    вырожденная сетка). Возвращает (x_cuts, y_cuts, owned), где
+    owned: room_idx → list[(i,j)] — какие ячейки сетки заняты комнатой."""
     xs_edges = [b[0] for _c, _m, b, _a in rooms] + [b[2] for _c, _m, b, _a in rooms]
     ys_edges = [b[1] for _c, _m, b, _a in rooms] + [b[3] for _c, _m, b, _a in rooms]
     x_cuts, xmap = _snap_edges(xs_edges, snap_tol)
@@ -190,10 +240,11 @@ def _build_mosaic(rooms, snap_tol: int):
     yi = {v: i for i, v in enumerate(y_cuts)}
     nx, ny = len(x_cuts) - 1, len(y_cuts) - 1
 
-    # grid[j][i] = индекс комнаты, владеющей ячейкой (i,j); -1 = свободна.
-    grid = [[-1] * nx for _ in range(ny)]
-    cell_ranges = []
-    for ridx, (_cat, _mask, (x0, y0, x1, y1), _a) in enumerate(rooms):
+    grid = [[-1] * nx for _ in range(ny)]  # индекс комнаты-владельца ячейки; -1 = свободна
+
+    box_idxs = [i for i, r in enumerate(rooms) if r[1] is None]
+    for ridx in box_idxs:
+        _cat, _mask, (x0, y0, x1, y1), _a = rooms[ridx]
         ix0, ix1 = xi[xmap[x0]], xi[xmap[x1]]
         iy0, iy1 = yi[ymap[y0]], yi[ymap[y1]]
         if ix1 <= ix0 or iy1 <= iy0:
@@ -203,29 +254,59 @@ def _build_mosaic(rooms, snap_tol: int):
                 if grid[j][i] != -1:
                     raise _Rejected("наложение комнат (не slicing-раскладка)")
                 grid[j][i] = ridx
-        cell_ranges.append((ix0, ix1, iy0, iy1))
+
+    mask_idxs = [i for i, r in enumerate(rooms) if r[1] is not None]
+    if mask_idxs:
+        for j in range(ny):
+            y0, y1 = y_cuts[j], y_cuts[j + 1]
+            for i in range(nx):
+                if grid[j][i] != -1:
+                    continue
+                x0, x1 = x_cuts[i], x_cuts[i + 1]
+                best_ridx, best_count = -1, 0
+                for ridx in mask_idxs:
+                    count = int(rooms[ridx][1][y0:y1, x0:x1].sum())
+                    if count > best_count:
+                        best_ridx, best_count = ridx, count
+                cell_area = (y1 - y0) * (x1 - x0) or 1
+                if best_ridx != -1 and best_count / cell_area >= 0.5:
+                    grid[j][i] = best_ridx
 
     for j in range(ny):
         for i in range(nx):
             if grid[j][i] == -1:
                 raise _Rejected("щель в раскладке (не покрыта ни одной комнатой)")
 
-    return x_cuts, y_cuts, cell_ranges
+    owned: dict[int, list[tuple[int, int]]] = {}
+    for j in range(ny):
+        for i in range(nx):
+            owned.setdefault(grid[j][i], []).append((i, j))
+    for ridx in range(len(rooms)):
+        if ridx not in owned:
+            raise _Rejected("комната не получила ни одной ячейки (перекрыта другой)")
+
+    return x_cuts, y_cuts, owned
 
 
-def _mean_iou(rooms, x_cuts, y_cuts, cell_ranges) -> float:
-    """Средний IoU реконструированного прямоугольника ячеек с исходной формой.
-
-    Для PNG-пути форма — пиксельная маска (комната может быть непрямоугольной,
-    IoU честно ловит грубость приближения). Для box-пути (Graph2Plan) маски
-    нет, комната — уже прямоугольник bbox; IoU считается аналитически как
-    пересечение/объединение двух прямоугольников (bbox и снапнутая ячейка) —
-    он < 1, только если снап заметно сдвинул грани."""
+def _mean_iou(rooms, x_cuts, y_cuts, owned) -> float:
+    """Средний IoU реконструированной (возможно, многоячеечной) формы с
+    исходной. Для PNG-пути форма — пиксельная маска (IoU честно ловит
+    грубость приближения, в т.ч. для Г-образных комнат — их owned-ячейки
+    могут не совпадать в точности с диагональю реального контура). Для
+    box-пути (Graph2Plan) маски нет, owned-ячейки всегда образуют один
+    прямоугольник (см. _build_mosaic); IoU считается аналитически против
+    заявленного bbox."""
     ious = []
-    for (_cat, mask, bbox, _a), (ix0, ix1, iy0, iy1) in zip(rooms, cell_ranges):
-        rx0, rx1 = x_cuts[ix0], x_cuts[ix1]
-        ry0, ry1 = y_cuts[iy0], y_cuts[iy1]
+    for ridx, (_cat, mask, bbox, _a) in enumerate(rooms):
+        cells = owned.get(ridx, [])
+        if not cells:
+            ious.append(0.0)
+            continue
         if mask is None:
+            i0 = min(i for i, _j in cells); i1 = max(i for i, _j in cells) + 1
+            j0 = min(j for _i, j in cells); j1 = max(j for _i, j in cells) + 1
+            rx0, rx1 = x_cuts[i0], x_cuts[i1]
+            ry0, ry1 = y_cuts[j0], y_cuts[j1]
             bx0, by0, bx1, by1 = bbox
             iw = max(0, min(bx1, rx1) - max(bx0, rx0))
             ih = max(0, min(by1, ry1) - max(by0, ry0))
@@ -234,7 +315,8 @@ def _mean_iou(rooms, x_cuts, y_cuts, cell_ranges) -> float:
             ious.append(inter / (union or 1))
         else:
             rect = np.zeros_like(mask, dtype=bool)
-            rect[ry0:ry1, rx0:rx1] = True
+            for i, j in cells:
+                rect[y_cuts[j]:y_cuts[j + 1], x_cuts[i]:x_cuts[i + 1]] = True
             inter = int((mask & rect).sum())
             union = int((mask | rect).sum()) or 1
             ious.append(inter / union)
@@ -293,13 +375,13 @@ def _emit_template(rooms, *, source_id: str, min_iou: float, snap_tol_px: int,
             reasons["мало комнат (<2)"] += 1
         return None
     try:
-        x_cuts, y_cuts, cell_ranges = _build_mosaic(rooms, snap_tol_px)
+        x_cuts, y_cuts, owned = _build_mosaic(rooms, snap_tol_px)
     except _Rejected as e:
         if reasons is not None:
             reasons[str(e)] += 1
         return None
 
-    iou = _mean_iou(rooms, x_cuts, y_cuts, cell_ranges)
+    iou = _mean_iou(rooms, x_cuts, y_cuts, owned)
     if iou < min_iou:
         if reasons is not None:
             reasons["грубое приближение (IoU<порога)"] += 1
@@ -314,13 +396,22 @@ def _emit_template(rooms, *, source_id: str, min_iou: float, snap_tol_px: int,
     cats = [r[0] for r in rooms]
     seen: Counter = Counter()
     out_rooms = []
-    for (cat, _m, _b, _a), (ix0, ix1, iy0, iy1) in zip(rooms, cell_ranges):
+    for ridx, (cat, _m, _b, _a) in enumerate(rooms):
         seen[cat] += 1
-        out_rooms.append({
-            "slot": f"{cat}_{seen[cat]}" if cats.count(cat) > 1 else cat,
-            "category": cat,
-            "cx0": ix0, "cx1": ix1, "cy0": iy0, "cy1": iy1,
-        })
+        slot = f"{cat}_{seen[cat]}" if cats.count(cat) > 1 else cat
+        rects = _cells_to_rects(owned[ridx])
+        if len(rects) == 1:
+            ix0, ix1, iy0, iy1 = rects[0]
+            out_rooms.append({"slot": slot, "category": cat, "cx0": ix0, "cx1": ix1, "cy0": iy0, "cy1": iy1})
+        else:
+            # Непрямоугольная (Г-образная/ступенчатая) комната — несколько
+            # ячеек сетки вместо одной. Возможно только на PNG-пути (маска
+            # даёт точную форму); box-путь (Graph2Plan) всегда даёт len==1
+            # по построению _build_mosaic (эксклюзивно-прямоугольное владение).
+            out_rooms.append({
+                "slot": slot, "category": cat,
+                "cells": [[ix0, ix1, iy0, iy1] for ix0, ix1, iy0, iy1 in rects],
+            })
 
     comp = ", ".join(f"{_RU_CAT.get(c, c)}×{n}" for c, n in sorted(Counter(cats).items()))
     return {

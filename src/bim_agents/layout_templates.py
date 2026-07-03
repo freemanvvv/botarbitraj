@@ -143,27 +143,129 @@ def _refit_axis(cuts01: list[float], spans: list[tuple[int, int, float]], total_
     return [round(c, 4) for c in cuts_m]
 
 
+def _slot_rects(slot: dict) -> list[tuple[int, int, int, int]]:
+    """Индексные прямоугольники слота шаблона: обычный слот — один
+    (cx0,cx1,cy0,cy1); Г-образный/ступенчатый ("cells") — несколько."""
+    if "cells" in slot:
+        return [tuple(r) for r in slot["cells"]]
+    return [(slot["cx0"], slot["cx1"], slot["cy0"], slot["cy1"])]
+
+
+def _cells_from_index_rects(rects_idx: list[tuple[int, int, int, int]]) -> set[tuple[int, int]]:
+    """Прямоугольники слота в индексах сетки (cx0,cx1,cy0,cy1) → множество
+    единичных ячеек (i,j), которые они покрывают."""
+    cells: set[tuple[int, int]] = set()
+    for cx0, cx1, cy0, cy1 in rects_idx:
+        for i in range(cx0, cx1):
+            for j in range(cy0, cy1):
+                cells.add((i, j))
+    return cells
+
+
+def _merge_unit_cells_to_loop(cells: set[tuple[int, int]]) -> list[tuple[int, int]] | None:
+    """Единичные ячейки сетки (i,j) → замкнутый контур из ВЕРШИН СЕТКИ
+    (индексы, не метры) обходом границы.
+
+    Работаем на уровне единичных ячеек, а не произвольных прямоугольников:
+    рёбра соседних единичных ячеек всегда совпадают ЦЕЛИКОМ (длина строго 1
+    шаг сетки), поэтому взаимное гашение общих рёбер корректно всегда — в
+    отличие от попытки гасить рёбра исходных (разноразмерных) прямоугольников
+    слота напрямую, где общая граница может быть лишь ЧАСТЬЮ более длинного
+    ребра одного из них (внутренний угол Г-формы) и не отменяется точным
+    сравнением. None — ячейки не образуют одну простую (без дыр, односвязную)
+    rectilinear-область; вызывающая сторона должна считать это отказом."""
+    if not cells:
+        return None
+    edge_count: dict[tuple[tuple[int, int], tuple[int, int]], int] = {}
+    for i, j in cells:
+        corners = [(i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)]
+        for k in range(4):
+            p1, p2 = corners[k], corners[(k + 1) % 4]
+            edge_count[(p1, p2)] = edge_count.get((p1, p2), 0) + 1
+
+    boundary = []
+    cancelled = set()
+    for (p1, p2) in list(edge_count):
+        if (p1, p2) in cancelled or (p2, p1) in cancelled:
+            continue
+        if (p2, p1) in edge_count:
+            cancelled.add((p1, p2)); cancelled.add((p2, p1))
+        else:
+            boundary.append((p1, p2))
+    if not boundary:
+        return None
+
+    adj: dict[tuple[int, int], list[tuple[int, int]]] = {}
+    for p1, p2 in boundary:
+        adj.setdefault(p1, []).append(p2)
+
+    start = boundary[0][0]
+    loop = [start]
+    cur = start
+    used = set()
+    while True:
+        nxts = [p for p in adj.get(cur, []) if (cur, p) not in used]
+        if not nxts:
+            return None  # оборванный контур — не односвязная простая область
+        nxt = nxts[0]
+        used.add((cur, nxt))
+        if nxt == start:
+            break
+        loop.append(nxt)
+        cur = nxt
+    if len(used) != len(boundary):
+        return None  # остались непосещённые рёбра — несколько отдельных контуров
+    return _drop_collinear(loop)
+
+
+def _drop_collinear(loop: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Убирает вершины контура, лежащие на прямой между соседями (стык двух
+    единичных ячеек одной комнаты вдоль общей внешней стороны — по трассировке
+    он не даёт настоящего угла). Не влияет на корректность (тот же простой
+    полигон), но даёт компактный список вершин — как у остальных шаблонов."""
+    n = len(loop)
+    if n < 3:
+        return loop
+    out = []
+    for k in range(n):
+        p0, p1, p2 = loop[k - 1], loop[k], loop[(k + 1) % n]
+        dx1, dy1 = p1[0] - p0[0], p1[1] - p0[1]
+        dx2, dy2 = p2[0] - p1[0], p2[1] - p1[1]
+        if dx1 * dy2 - dy1 * dx2 != 0:  # не коллинеарны — настоящий угол
+            out.append(p1)
+    return out or loop
+
+
 def apply_template(tpl: dict, rooms_meta: list[tuple], fw: float, fd: float) -> tuple[dict, dict]:
     """Шаг 3: программа комнат + шаблон → полигоны в метрах.
 
     rooms_meta: [(Room, category)]. Комнаты той же категории назначаются на
-    ячейки шаблона «большая комната → большая ячейка»; если комнат этой
-    категории БОЛЬШЕ, чем ячеек (match_template это допускает), лишние
-    докладываются в ту же ячейку и она делится (_split_cell). Сетка сперва
-    refit'ится под суммарные площади ячеек, затем каждая ячейка режется между
-    своими комнатами. Возвращает (polygons: id→polygon, cats: id→category).
+    слоты шаблона «большая комната → большой слот» (площадь слота — сумма
+    площадей его прямоугольников); если комнат этой категории БОЛЬШЕ, чем
+    слотов (match_template это допускает), лишние докладываются в тот же
+    слот. Обычный (однопрямоугольный) слот в этом случае делится
+    (_split_cell); Г-образный ("cells") слот делить не умеем — несколько
+    комнат в него не докладываем (ValueError → откат на зонированный
+    fallback в floorplan_agent.py). Сетка сперва refit'ится под суммарные
+    площади (каждый прямоугольник слота — пропорциональная доля площади
+    слота), затем полигон каждой комнаты строится из её прямоугольника(ов)
+    в метрах (Г-образные — через _merge_unit_cells_to_loop, обход на уровне единичных ячеек сетки).
+    Возвращает (polygons: id→polygon, cats: id→category).
     """
     xs01, ys01 = tpl["x_cuts"], tpl["y_cuts"]
-    cells = tpl["rooms"]
+    slots = tpl["rooms"]
 
-    def cell_area01(c):
-        return (xs01[c["cx1"]] - xs01[c["cx0"]]) * (ys01[c["cy1"]] - ys01[c["cy0"]])
+    def slot_rects01(slot):
+        return [(xs01[cx0], ys01[cy0], xs01[cx1], ys01[cy1]) for cx0, cx1, cy0, cy1 in _slot_rects(slot)]
 
-    by_cat_cells: dict[str, list[dict]] = {}
-    for cell in cells:
-        by_cat_cells.setdefault(cell["category"], []).append(cell)
-    for cl in by_cat_cells.values():
-        cl.sort(key=cell_area01, reverse=True)
+    def slot_area01(slot):
+        return sum((x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in slot_rects01(slot))
+
+    by_cat_slots: dict[str, list[dict]] = {}
+    for slot in slots:
+        by_cat_slots.setdefault(slot["category"], []).append(slot)
+    for sl in by_cat_slots.values():
+        sl.sort(key=slot_area01, reverse=True)
 
     by_cat_rooms: dict[str, list] = {}
     for rm, cat in rooms_meta:
@@ -171,36 +273,59 @@ def apply_template(tpl: dict, rooms_meta: list[tuple], fw: float, fd: float) -> 
     for rms in by_cat_rooms.values():
         rms.sort(key=lambda r: r.area_m2, reverse=True)
 
-    # Комнаты каждой категории раскидываем по её ячейкам: первые (по убыванию
-    # площади) — по одной в каждую ячейку (крупная комната → крупная ячейка),
-    # дальше по кругу докладываем «лишние». Ячейка → список её комнат.
-    cell_rooms: dict[int, list] = {id(c): [] for c in cells}
-    for cat, cl in by_cat_cells.items():
+    # Комнаты каждой категории раскидываем по её слотам: первые (по убыванию
+    # площади) — по одной в каждый слот (крупная комната → крупный слот),
+    # дальше по кругу докладываем «лишние». Слот → список его комнат.
+    slot_rooms: dict[int, list] = {id(s): [] for s in slots}
+    for cat, sl in by_cat_slots.items():
         rms = by_cat_rooms.get(cat, [])
         if not rms:
             raise ValueError("категория шаблона отсутствует в программе")
         for i, rm in enumerate(rms):
-            cell_rooms[id(cl[i % len(cl)])].append(rm)
-    placed = sum(len(v) for v in cell_rooms.values())
+            slot_rooms[id(sl[i % len(sl)])].append(rm)
+    placed = sum(len(v) for v in slot_rooms.values())
     if placed != len(rooms_meta):
         # у программы есть категория, которой нет в шаблоне — подгонка невозможна
         raise ValueError("состав комнат не совпал с шаблоном")
+    for slot in slots:
+        if "cells" in slot and len(slot_rooms[id(slot)]) > 1:
+            # Г-образный слот получить несколько «лишних» комнат не может —
+            # делить непрямоугольную форму между ними не умеем.
+            raise ValueError("Г-образный слот не может принять несколько комнат")
 
-    # refit сетки под суммарные площади комнат каждой ячейки
-    def cell_target(c):
-        return sum(r.area_m2 for r in cell_rooms[id(c)]) or 0.5
-    x_spans = [(c["cx0"], c["cx1"], cell_target(c)) for c in cells]
-    y_spans = [(c["cy0"], c["cy1"], cell_target(c)) for c in cells]
+    # refit сетки: каждый прямоугольник слота вносит долю целевой площади
+    # слота пропорционально своей доле в исходной (0..1) площади слота.
+    def slot_target(slot):
+        return sum(r.area_m2 for r in slot_rooms[id(slot)]) or 0.5
+
+    x_spans, y_spans = [], []
+    for slot in slots:
+        target = slot_target(slot)
+        rects_idx = _slot_rects(slot)
+        area01 = slot_area01(slot) or 1e-9
+        for (cx0, cx1, cy0, cy1), (x0, y0, x1, y1) in zip(rects_idx, slot_rects01(slot)):
+            share = ((x1 - x0) * (y1 - y0)) / area01
+            x_spans.append((cx0, cx1, target * share))
+            y_spans.append((cy0, cy1, target * share))
     xs_m = _refit_axis(list(xs01), x_spans, fw)
     ys_m = _refit_axis(list(ys01), y_spans, fd)
 
     polygons, cats = {}, {}
-    for c in cells:
-        group = cell_rooms[id(c)]
-        x0, x1 = xs_m[c["cx0"]], xs_m[c["cx1"]]
-        y0, y1 = ys_m[c["cy0"]], ys_m[c["cy1"]]
-        subrects = _split_cell(x0, y0, x1, y1, [r.area_m2 for r in group])
-        for rm, rect in zip(group, subrects):
-            polygons[rm.id] = rect
-            cats[rm.id] = c["category"]
+    for slot in slots:
+        group = slot_rooms[id(slot)]
+        rects_idx = _slot_rects(slot)
+        if len(rects_idx) == 1:
+            cx0, cx1, cy0, cy1 = rects_idx[0]
+            x0, y0, x1, y1 = xs_m[cx0], ys_m[cy0], xs_m[cx1], ys_m[cy1]
+            subrects = _split_cell(x0, y0, x1, y1, [r.area_m2 for r in group])
+            for rm, rect in zip(group, subrects):
+                polygons[rm.id] = rect
+                cats[rm.id] = slot["category"]
+        else:
+            loop_idx = _merge_unit_cells_to_loop(_cells_from_index_rects(rects_idx))
+            polygon = [[xs_m[i], ys_m[j]] for i, j in loop_idx] if loop_idx is not None else None
+            if polygon is None:
+                raise ValueError("Г-образный слот дал несвязную геометрию после подгонки")
+            polygons[group[0].id] = polygon
+            cats[group[0].id] = slot["category"]
     return polygons, cats

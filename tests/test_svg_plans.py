@@ -98,3 +98,28 @@ def test_dimension_chain_has_segments_and_total_for_three_or_more_rooms():
     assert "3 000" in svg  # сегмент
     assert "9 000" in svg  # общий габарит
     assert svg.count("class=\"dimchain-line\"") >= 3  # минимум 2 сегмента снизу + 1 общий
+
+
+def test_non_rectangular_room_renders_as_polygon_with_shoelace_area():
+    """Г-образная комната (Room.polygon с >4 вершинами) должна рисоваться
+    точным контуром (<polygon>), а не bbox-прямоугольником — иначе заливка
+    перекрыла бы соседнюю комнату в вырезе формы. Площадь в подписи — по
+    формуле Гаусса от реального контура, а не bbox (который её завышает)."""
+    gen = SVGPlanGenerator(scale=40)
+    L = [[0, 0], [6, 0], [6, 4], [10, 4], [10, 10], [0, 10]]  # Г-форма
+    gen.add_room("Гостиная", 0, 0, 10, 10, polygon=L)  # bbox 10x10=100 м², реальная площадь меньше
+    svg = gen.generate()
+    assert '<polygon class="room-fill"' in svg
+    assert '<rect class="room-fill"' not in svg
+    from src.svg_plans import _shoelace_area
+    real_area = _shoelace_area(L)
+    assert real_area < 100.0
+    assert f"{real_area:.2f} м²" in svg
+
+
+def test_rectangular_room_still_renders_as_rect_when_no_polygon_given():
+    gen = SVGPlanGenerator(scale=40)
+    gen.add_room("Кухня", 0, 0, 5, 4)
+    svg = gen.generate()
+    assert '<rect class="room-fill"' in svg
+    assert '<polygon class="room-fill"' not in svg

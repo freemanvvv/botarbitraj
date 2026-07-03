@@ -44,7 +44,11 @@ def render_storey_svg(program, storey, title: str) -> str:
         x, y, w, h = _bbox(rp.polygon)
         meta = rooms_by_id.get(rp.id)
         name = meta.name if meta else rp.id
-        gen.add_room(name, x, y, w, h)
+        # Полигон передаём только для непрямоугольных комнат (Г-образные
+        # шаблоны датасета, >4 вершин) — для обычных rect-комнат bbox уже
+        # даёт идентичный результат, полигон не нужен.
+        poly = rp.polygon if len(rp.polygon) > 4 else None
+        gen.add_room(name, x, y, w, h, polygon=poly)
 
     for wp in storey.walls:
         (x1, y1), (x2, y2) = wp.axis
