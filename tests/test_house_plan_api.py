@@ -227,18 +227,22 @@ def test_house_plan_repair_loop_retries_llm_on_norm_violations(monkeypatch):
 def test_house_plan_repair_loop_keeps_best_attempt_when_still_failing(monkeypatch):
     """Если и повторная попытка не проходит нормы — отдаём тот вариант,
     где ошибок меньше, а не просто последний по счёту."""
+    # Крошечный footprint 5×3 — площади/ширины комнат ниже норм КМК при любой
+    # раскладке (grid-fallback их не спасает), поэтому обе попытки заведомо
+    # проваливают проверку, но "worse" (3 комнаты) даёт больше ошибок, чем
+    # "better" (2 комнаты) → должен выбраться вариант с меньшим числом ошибок.
     worse = {
-        "project_name": "Дом", "storeys": 1, "footprint": {"width_m": 6, "depth_m": 8},
+        "project_name": "Дом", "storeys": 1, "footprint": {"width_m": 5, "depth_m": 3},
         "rooms": [
-            {"id": "a", "name": "А", "storey": 0, "area_m2": 1, "type": "IfcSpace:LIVING", "min_width_m": 3.5},
-            {"id": "b", "name": "Б", "storey": 0, "area_m2": 1, "type": "IfcSpace:BEDROOM", "min_width_m": 3.5},
-            {"id": "c", "name": "В", "storey": 0, "area_m2": 1, "type": "IfcSpace:BEDROOM", "min_width_m": 3.5},
+            {"id": "a", "name": "А", "storey": 0, "area_m2": 1, "type": "IfcSpace:LIVING", "min_width_m": 2.0},
+            {"id": "b", "name": "Б", "storey": 0, "area_m2": 1, "type": "IfcSpace:BEDROOM", "min_width_m": 2.0},
+            {"id": "c", "name": "В", "storey": 0, "area_m2": 1, "type": "IfcSpace:BEDROOM", "min_width_m": 2.0},
         ],
     }
     better = {
-        "project_name": "Дом", "storeys": 1, "footprint": {"width_m": 6, "depth_m": 8},
+        "project_name": "Дом", "storeys": 1, "footprint": {"width_m": 5, "depth_m": 3},
         "rooms": [
-            {"id": "a", "name": "А", "storey": 0, "area_m2": 1, "type": "IfcSpace:LIVING", "min_width_m": 3.5},
+            {"id": "a", "name": "А", "storey": 0, "area_m2": 1, "type": "IfcSpace:LIVING", "min_width_m": 2.0},
             {"id": "b", "name": "Б", "storey": 0, "area_m2": 1, "type": "IfcSpace:BEDROOM", "min_width_m": 2.0},
         ],
     }
@@ -248,12 +252,12 @@ def test_house_plan_repair_loop_keeps_best_attempt_when_still_failing(monkeypatc
     assert r.status_code == 200
     d = r.json()
     assert calls["n"] == 2
-    # "worse" даёт 3 ошибки (А, Б, В все узкие); "better" — только 1 (Б всё
-    # ещё узка, но А теперь комплаентна) — значит должен выбраться второй
-    # вариант (меньше ошибок), а не первый по счёту.
-    assert len(d["norms_issues"]) == 1
-    assert not any(i["element_name"] == "А" for i in d["norms_issues"])
-    assert any(i["element_name"] == "Б" for i in d["norms_issues"])
+    # обе попытки провалены, но best-of-N должен вернуть "better" (меньше
+    # ошибок) — проверяем по его отличительному признаку: 2 комнаты, не 3.
+    kept_rooms = d["raw_program"]["building_program"]["rooms"]
+    assert len(kept_rooms) == 2
+    errors = [i for i in d["norms_issues"] if i["severity"] == "error"]
+    assert 0 < len(errors) < 6  # ошибки "better" (их меньше, чем 6 у "worse")
 
 
 def test_house_plans_list_endpoint_and_route_ordering(monkeypatch, cleanup_house_plans):

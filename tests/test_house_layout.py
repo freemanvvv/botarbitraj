@@ -123,6 +123,34 @@ def test_unknown_composition_falls_back_to_two_bands():
     assert len(ys) == 3  # 0, граница лент, 9
 
 
+def test_fallback_grids_deep_band_instead_of_corridor_rooms():
+    """Регрессия: раньше зонированный fallback клал все комнаты ленты в ОДИН
+    ряд на всю глубину — на глубоком узком участке комнаты вытягивались в
+    «кишку» (aspect >10). Теперь глубокая лента с многими комнатами
+    разбивается на сетку под-рядов (_grid_rows), и пропорции остаются
+    близкими к реальным."""
+    rooms = [Room(id=f"r{i}", name=f"Комн {i}", storey=0, area_m2=14,
+                  type="IfcSpace:GENERIC", min_width_m=2.5) for i in range(6)]
+    program = BuildingProgram(project_name="Т", storeys=1,
+                              footprint={"width_m": 7.0, "depth_m": 12.0}, rooms=rooms)
+    fp = generate_floor_plan(program)
+    worst = 0.0
+    for rp in fp.storeys[0].rooms:
+        w, h = _bbox(rp.polygon)
+        assert w > 0.01 and h > 0.01
+        worst = max(worst, max(w, h) / min(w, h))
+    assert worst < 3.5, f"комната-кишка не устранена, worst aspect {worst:.2f}"
+    # сетка действительно образовалась: больше двух уровней y (не один ряд)
+    ys = {round(p[1], 2) for rp in fp.storeys[0].rooms for p in rp.polygon}
+    assert len(ys) >= 3
+
+    # мозаика по-прежнему без наложений и щелей: суммарная площадь = footprint
+    total = sum((max(p[0] for p in rp.polygon) - min(p[0] for p in rp.polygon)) *
+                (max(p[1] for p in rp.polygon) - min(p[1] for p in rp.polygon))
+                for rp in fp.storeys[0].rooms)
+    assert abs(total - 7.0 * 12.0) < 1e-3
+
+
 def test_template_refit_respects_footprint_exactly():
     program = _family_program()
     fp = generate_floor_plan(program)

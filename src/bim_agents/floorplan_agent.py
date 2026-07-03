@@ -101,8 +101,44 @@ def _band_split(metas: list[tuple]) -> tuple[list, list]:
     return front, back
 
 
+def _grid_rows(band: list[tuple], y0: float, y1: float, fw: float) -> list[tuple]:
+    """Ленту с многими комнатами разбивает на несколько под-рядов (сетку),
+    чтобы комнаты не вытягивались в «кишку». Один ряд из n комнат по ширине
+    fw даёт ячейки (fw/n)×depth: если лента глубокая и комнат много, ячейки
+    получаются высокими и узкими. Число под-рядов r≈√(n·depth/fw) уравнивает
+    стороны ячейки; для широкой мелкой ленты (depth<fw) округляется к 1 —
+    тогда прежнее поведение (один ряд) сохраняется.
+
+    Глубина делится между под-рядами РАВНОМЕРНО, а не по площади: площадь
+    подгоняется шириной комнат внутри ряда (см. _row_widths) и repair-loop'ом,
+    а вот сильно неравные глубины как раз и рождают «кишки» (под-ряд с одной
+    мелкой комнатой получал бы 1-метровую полосу во всю ширину). Комнаты
+    раскладываются по под-рядам примерно поровну. Возвращает (под-ряд, sy0,
+    sy1)."""
+    n = len(band)
+    depth = y1 - y0
+    if n <= 1 or depth <= 1e-6:
+        return [(band, y0, y1)]
+    r = max(1, min(n, round(math.sqrt(n * depth / max(fw, 1e-6)))))
+    if r == 1:
+        return [(band, y0, y1)]
+    # сбалансированное число комнат в под-рядах: n=5,r=2 → [3,2], а не [3,2]
+    # с перекосом — первые (n mod r) рядов на одну комнату больше.
+    base, extra = divmod(n, r)
+    sizes = [base + 1 if i < extra else base for i in range(r)]
+    out, idx, cur = [], 0, y0
+    for k, size in enumerate(sizes):
+        chunk = band[idx:idx + size]
+        idx += size
+        sy1 = y1 if k == r - 1 else round(y0 + depth * (k + 1) / r, 4)
+        out.append((chunk, round(cur, 4), sy1))
+        cur = sy1
+    return out
+
+
 def _zoned_polygons(metas: list[tuple], fw: float, fd: float) -> tuple[dict, dict]:
-    """Fallback-раскладка: одна или две ленты. Возвращает (polygons, cats)."""
+    """Fallback-раскладка: одна/две ленты, каждая при необходимости разбита
+    на сетку под-рядов (см. _grid_rows). Возвращает (polygons, cats)."""
     front, back = _band_split(metas)
     if back and fd >= _RULES["min_depth_for_two_bands_m"]:
         a_front = sum(t[0].area_m2 for t in front) or 1.0
@@ -110,9 +146,13 @@ def _zoned_polygons(metas: list[tuple], fw: float, fd: float) -> tuple[dict, dic
         d1 = fd * a_front / (a_front + a_back)
         mbd = _RULES["min_band_depth_m"]
         d1 = round(min(max(d1, mbd), fd - mbd), 4)
-        rows = [(front, 0.0, d1), (back, d1, fd)]
+        bands = [(front, 0.0, d1), (back, d1, fd)]
     else:
-        rows = [(sorted(front + back, key=_order_key), 0.0, fd)]
+        bands = [(sorted(front + back, key=_order_key), 0.0, fd)]
+
+    rows = []
+    for band, by0, by1 in bands:
+        rows.extend(_grid_rows(band, by0, by1, fw))
 
     polygons, cats = {}, {}
     for row, y0, y1 in rows:
@@ -126,7 +166,7 @@ def _zoned_polygons(metas: list[tuple], fw: float, fd: float) -> tuple[dict, dic
             polygons[rm.id] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
             cats[rm.id] = cat
         # накопленная float-ошибка: последняя комната упирается ровно в fw,
-        # иначе стык лент не совпадёт по владельцам сегментов
+        # иначе стык рядов не совпадёт по владельцам сегментов
         polygons[row[-1][0].id][1][0] = polygons[row[-1][0].id][2][0] = round(fw, 4)
     return polygons, cats
 
