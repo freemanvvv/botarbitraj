@@ -539,8 +539,8 @@ def _main(argv=None):
     ap.add_argument("input", help="каталог с RPLAN *.png (PNG-режим) ИЛИ путь к Graph2Plan .mat (--graph2plan)")
     ap.add_argument("--graph2plan", action="store_true",
                     help="input — это Graph2Plan .mat (struct-массив data), а не каталог PNG")
-    ap.add_argument("--out", required=True, help="куда записать датасет шаблонов")
-    ap.add_argument("--append", help="существующий house_templates.json — дописать в него (с дедупом)")
+    ap.add_argument("--out", help="куда записать новый датасет (обязателен, если нет --append)")
+    ap.add_argument("--append", help="существующий house_templates.json — дописать В НЕГО ЖЕ (in place, с дедупом)")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--category-channel", type=int, default=1)
     ap.add_argument("--instance-channel", type=int, default=2)
@@ -557,22 +557,33 @@ def _main(argv=None):
             category_channel=args.category_channel, instance_channel=args.instance_channel,
             snap_tol_px=args.snap, min_iou=args.min_iou)
 
+    if not args.append and not args.out:
+        ap.error("нужен --out (или --append для дописывания в существующий датасет)")
+
     if args.append:
+        # Дописываем В ТОТ ЖЕ файл (in place), а не в --out — иначе датасет,
+        # который читает движок, не меняется (это и была причина «ИТОГО: 6»).
         with open(args.append, encoding="utf-8") as f:
             base = json.load(f)
         existing_sigs = {_signature(t) for t in base["templates"]}
         added = [t for t in templates if _signature(t) not in existing_sigs]
         base["templates"].extend(added)
-        payload = base
-        print(f"дописано {len(added)} новых (из {len(templates)} уникальных) в {args.append}")
+        out_path, payload = args.append, base
+        print(f"дописано {len(added)} новых (из {len(templates)} уникальных); всего в датасете {len(base['templates'])}")
     else:
+        out_path = args.out
         payload = {
-            "_comment": "Сгенерировано из RPLAN через src/bim_agents/rplan_convert.py",
+            "_comment": "Сгенерировано из RPLAN/Graph2Plan через src/bim_agents/rplan_convert.py",
             "templates": templates,
         }
 
-    with open(args.out, "w", encoding="utf-8") as f:
+    with open(out_path, "w", encoding="utf-8") as f:
         json.dump(payload, f, ensure_ascii=False, indent=2)
+
+    # Побочно можно продублировать в --out (напр. для инспекции), если он задан вместе с --append
+    if args.append and args.out and args.out != args.append:
+        with open(args.out, "w", encoding="utf-8") as f:
+            json.dump({"templates": templates}, f, ensure_ascii=False, indent=2)
 
     print(f"файлов: {stats['total']}  принято: {stats['accepted']}  "
           f"отклонено: {stats['rejected']}  дублей: {stats['duplicate']}  ошибок: {stats['error']}")
@@ -580,7 +591,7 @@ def _main(argv=None):
         print("причины отказа:")
         for reason, n in sorted(stats["reasons"].items(), key=lambda kv: -kv[1]):
             print(f"  {n:>6}  {reason}")
-    print(f"записано в {args.out}")
+    print(f"записано в {out_path}")
 
 
 if __name__ == "__main__":

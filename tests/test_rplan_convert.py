@@ -257,3 +257,31 @@ def test_graph2plan_output_consumable_by_matcher(monkeypatch):
     monkeypatch.setattr(layout_templates, "load_templates", lambda: load_templates() + [tpl])
     got = layout_templates.match_template(["living", "kitchen", "wet"], aspect=tpl["aspect"], level=0)
     assert got is not None
+
+
+def test_cli_append_writes_back_to_target_file(tmp_path):
+    """Регрессия: --append должен дописывать В САМ файл датасета (in place),
+    а не в --out. Раньше объединённый результат уходил в --out, а
+    house_templates.json оставался нетронутым (симптом «ИТОГО: 6»)."""
+    import json
+    import scipy.io
+    from src.bim_agents.rplan_convert import _main
+
+    def plan(rt, bx, nm):
+        return {"rType": np.array(rt, np.int32), "gtBoxNew": np.array(bx, np.int32),
+                "boundary": np.array([[10, 100, 0, 1], [30, 100, 0, 1]], np.int32), "name": nm}
+    mat = tmp_path / "g.mat"
+    scipy.io.savemat(str(mat), {"data": np.array([
+        plan([0, 2], [[0, 0, 50, 100], [50, 0, 100, 100]], "a"),
+        plan([0, 2, 3], [[0, 0, 50, 100], [50, 0, 100, 50], [50, 50, 100, 100]], "b"),
+    ], dtype=object)})
+
+    target = tmp_path / "house_templates.json"
+    target.write_text(json.dumps({"templates": [
+        {"id": f"seed{i}", "rooms": [], "x_cuts": [0, 1], "y_cuts": [0, 1]} for i in range(6)
+    ]}), encoding="utf-8")
+
+    _main([str(mat), "--graph2plan", "--append", str(target), "--min-iou", "0.7"])
+
+    after = json.loads(target.read_text(encoding="utf-8"))["templates"]
+    assert len(after) == 8   # 6 сидов + 2 новых, записано В ЦЕЛЕВОЙ файл
