@@ -1,162 +1,300 @@
 """
 Фаза 1 — FloorPlanAgent.
-Treemap-солвер: размещает прямоугольные помещения внутри контура здания
-по спецификации BuildingProgram. Гарантирует замкнутость, отсутствие наложений,
-корректный axis-граф стен.
+
+BuildingProgram → FloorPlan в два уровня:
+
+1. Шаблонный путь (основной): состав комнат этажа ищется в лёгком датасете
+   проверенных топологий (house_templates.json, см. layout_templates.py) —
+   «Поиск → Сравнение → Подгонка», как в CAD/AI-системах поверх RPLAN/
+   CubiCasa5k. Найденный шаблон параметрически деформируется под габариты
+   и целевые площади, топология (кто с кем граничит, где вход) сохраняется.
+
+2. Зонированный солвер (fallback, когда состав комнат не совпал ни с одним
+   шаблоном): этаж делится на две ленты по датасету зонирования
+   (house_layout_dataset.json) — фронтальная (вход: прихожая, гостиная,
+   кухня, мокрая зона) и тыльная (спальни). Внутри ленты — однорядная
+   раскладка с гарантией Room.min_width_m. Прежний вариант — ОДНА лента на
+   всю глубину footprint'а — давал комнаты-«кишки» (санузел 1.7×9 м);
+   две ленты дают пропорции, близкие к реальным проектам.
+
+Общая для обоих путей геометрия: сегментированные стены (общие грани комнат
+режутся на участки по владельцам — иначе стык двух лент с разной нарезкой
+не распознавался бы как внутренняя стена), двери от прихожей-хаба (а не
+«дверь в каждой внутренней стене»), входная дверь на фасаде 1-го этажа,
+окна только комнатам, которым нужен свет (needs_window в датасете).
 """
 from __future__ import annotations
+import json
 import math
+import os
+
 from .contracts import BuildingProgram, FloorPlan, RoomPlan, WallPlan, OpeningPlan, StoreyPlan, StairPlan
+from .layout_templates import match_template, apply_template
+
+_DATASET_PATH = os.path.join(os.path.dirname(__file__), "house_layout_dataset.json")
+with open(_DATASET_PATH, encoding="utf-8") as _f:
+    _DATASET = json.load(_f)
+_CATS = _DATASET["room_categories"]
+_RULES = _DATASET["rules"]
 
 
-def _squarified_treemap(areas: list[float], rect_w: float, rect_h: float, min_widths: list[float] | None = None) -> list[list[float]]:
-    """
-    Однорядное разбиение rect на вертикальные полосы по площади — раньше
-    называлось "упрощённый treemap" и пыталось заводить вторую строку при
-    переполнении ширины, но поскольку cell_w всегда пропорциональна area/
-    total, сумма cell_w математически равна rect_w и вторая строка
-    фактически никогда не создавалась — на практике это ВСЕГДА была одна
-    строка, только без учёта Room.min_width_m (LLM обязан его заполнять —
-    ARCHITECT_PROMPT прямо просит min_width_m, — но он попросту
-    игнорировался). Из-за этого узкие по площади комнаты (например,
-    прихожая) получали ширину меньше нормы КМК ещё до всякой проверки.
+def classify_room(type_str: str, name: str = "") -> str:
+    """Свободные Room.type/name → категория зонирования из датасета."""
+    haystack = f"{type_str} {name}".lower()
+    for cat, spec in _CATS.items():
+        for kw in spec.get("keywords", []):
+            if kw in haystack:
+                return cat
+    return "other"
 
-    Здесь — тот же однорядный расклад, но каждая комната сперва получает
-    min_widths[i] гарантированно, остаток ширины распределяется по area
-    (тот же приём, что src/floorplan/solver.py:_split_widths). Каждая
-    комната по-прежнему занимает всю глубину rect_h (примыкает и к
-    передней, и к задней внешним стенам) — сознательное упрощение вместо
-    настоящего 2D treemap, но оно даёт гарантированный доступ к внешней
-    стене (и, значит, к окну) для КАЖДОЙ комнаты, что было основным
-    источником нарушений норм в house_norms.py.
-    """
-    n = len(areas)
-    if n == 0:
-        return []
+
+def _needs_window(cat: str) -> bool:
+    return _CATS.get(cat, {}).get("needs_window", True)
+
+
+# ─────────────────────────── зонированный fallback ───────────────────────────
+
+def _row_widths(areas: list[float], mins: list[float], rect_w: float) -> list[float]:
+    """Ширины комнат в одном ряду: каждой гарантируется её минимум, остаток
+    делится пропорционально площади (тот же приём, что solver.py апартаментов).
+    Если минимумы не влезают — пропорциональное сжатие, нарушение поймает
+    house_norms."""
     total = sum(areas) or 1.0
-    mins = min_widths or [0.0] * n
-
     sum_min = sum(mins)
     if rect_w >= sum_min:
-        remaining = rect_w - sum_min
-        widths = [mw + remaining * (a / total) for mw, a in zip(mins, areas)]
+        rem = rect_w - sum_min
+        return [mw + rem * (a / total) for mw, a in zip(mins, areas)]
+    if sum_min > 0:
+        return [mw * rect_w / sum_min for mw in mins]
+    return [rect_w / len(areas)] * len(areas)
+
+
+def _order_key(meta):
+    rm, cat = meta
+    return (_CATS.get(cat, {}).get("order", 9), -rm.area_m2, rm.id)
+
+
+def _band_split(metas: list[tuple]) -> tuple[list, list]:
+    """Распределение комнат этажа по двум лентам (front/back) по датасету +
+    балансировка, чтобы в каждой ленте было ≥2 комнат (одна комната лентой
+    на всю ширину дома — вырожденный случай). Пустая back — сигнал
+    «раскладывать одним рядом»."""
+    if len(metas) < _RULES["min_rooms_for_two_bands"]:
+        return list(metas), []
+    front = [m for m in metas if _CATS.get(m[1], {}).get("band", "any") != "back"]
+    back = [m for m in metas if _CATS.get(m[1], {}).get("band", "any") == "back"]
+    while len(back) < 2 and len(front) > 2:
+        movable = [m for m in front if m[1] != "hall"]
+        if not movable:
+            break
+        m = min(movable, key=lambda t: t[0].area_m2)
+        front.remove(m)
+        back.append(m)
+    while len(front) < 2 and len(back) > 2:
+        m = min(back, key=lambda t: t[0].area_m2)
+        back.remove(m)
+        front.append(m)
+    if not front or not back:
+        return list(metas), []
+    front.sort(key=_order_key)
+    back.sort(key=_order_key)
+    return front, back
+
+
+def _zoned_polygons(metas: list[tuple], fw: float, fd: float) -> tuple[dict, dict]:
+    """Fallback-раскладка: одна или две ленты. Возвращает (polygons, cats)."""
+    front, back = _band_split(metas)
+    if back and fd >= _RULES["min_depth_for_two_bands_m"]:
+        a_front = sum(t[0].area_m2 for t in front) or 1.0
+        a_back = sum(t[0].area_m2 for t in back) or 1.0
+        d1 = fd * a_front / (a_front + a_back)
+        mbd = _RULES["min_band_depth_m"]
+        d1 = round(min(max(d1, mbd), fd - mbd), 4)
+        rows = [(front, 0.0, d1), (back, d1, fd)]
     else:
-        # Не помещается даже по минимумам — сжимаем пропорционально;
-        # получившееся нарушение нормы ширины поймает house_norms.py,
-        # так же как аналогичный fallback в solver.py.
-        scale = rect_w / sum_min if sum_min > 0 else 1.0 / n
-        widths = [mw * scale if sum_min > 0 else rect_w / n for mw in mins]
+        rows = [(sorted(front + back, key=_order_key), 0.0, fd)]
 
-    results = []
-    cur_x = 0.0
-    for w in widths:
-        results.append([
-            [cur_x, 0.0], [cur_x + w, 0.0], [cur_x + w, rect_h], [cur_x, rect_h],
-        ])
-        cur_x += w
-    return results
+    polygons, cats = {}, {}
+    for row, y0, y1 in rows:
+        widths = _row_widths([t[0].area_m2 for t in row],
+                             [t[0].min_width_m for t in row], fw)
+        cur = 0.0
+        for (rm, cat), w in zip(row, widths):
+            x0 = round(cur, 4)
+            cur += w
+            x1 = round(cur, 4)
+            polygons[rm.id] = [[x0, y0], [x1, y0], [x1, y1], [x0, y1]]
+            cats[rm.id] = cat
+        # накопленная float-ошибка: последняя комната упирается ровно в fw,
+        # иначе стык лент не совпадёт по владельцам сегментов
+        polygons[row[-1][0].id][1][0] = polygons[row[-1][0].id][2][0] = round(fw, 4)
+    return polygons, cats
 
 
-def _walls_from_rooms(polygons: dict[str, list[list[float]]], thickness: float) -> list[WallPlan]:
-    """Строит стены по общим граням между помещениями + внешний контур."""
-    wall_id = 0
-    walls = []
-    room_list = list(polygons.keys())
-    used_edges = set()
+# ───────────────────────── стены (сегментированные) ─────────────────────────
 
-    # Каждое ребро: ((x1,y1),(x2,y2)) в отсортированном виде
-    def edge_key(p1, p2):
-        p1r = (round(p1[0], 4), round(p1[1], 4))
-        p2r = (round(p2[0], 4), round(p2[1], 4))
-        return tuple(sorted((p1r, p2r)))
-
-    # Собираем все рёбра
-    all_edges = {}
+def _walls_from_rooms(polygons: dict[str, list[list[float]]]) -> tuple[list[WallPlan], dict]:
+    """Грани всех комнат группируются по несущим линиям и режутся на участки
+    в точках смены владельцев. Участок с одним владельцем — внешняя стена,
+    с двумя — внутренняя. Прежний вариант сравнивал только ЦЕЛЫЕ рёбра —
+    у двух лент с разной нарезкой общая граница не совпадает целиком, и
+    внутренние стены ошибочно стали бы внешними (с окнами в межкомнатных
+    перегородках)."""
+    horiz: dict[float, list] = {}
+    vert: dict[float, list] = {}
     for rid, poly in polygons.items():
         n = len(poly)
         for i in range(n):
-            p1 = poly[i]
-            p2 = poly[(i + 1) % n]
-            ek = edge_key(p1, p2)
-            if ek not in all_edges:
-                all_edges[ek] = []
-            all_edges[ek].append(rid)
+            x1, y1 = round(poly[i][0], 4), round(poly[i][1], 4)
+            x2, y2 = round(poly[(i + 1) % n][0], 4), round(poly[(i + 1) % n][1], 4)
+            if abs(y1 - y2) < 1e-9 and abs(x1 - x2) > 1e-9:
+                horiz.setdefault(y1, []).append((min(x1, x2), max(x1, x2), rid))
+            elif abs(x1 - x2) < 1e-9 and abs(y1 - y2) > 1e-9:
+                vert.setdefault(x1, []).append((min(y1, y2), max(y1, y2), rid))
 
-    # Общие рёбра = внутренние стены, уникальные = внешние
-    for ek, rids in all_edges.items():
-        (x1, y1), (x2, y2) = ek
-        if len(rids) == 1:
-            wtype = "exterior"
-        else:
-            wtype = "interior"
+    walls: list[WallPlan] = []
+    owners: dict[str, frozenset] = {}
+    wall_n = 0
 
-        wall_id += 1
-        walls.append(WallPlan(
-            id=f"w{wall_id}",
-            axis=[[x1, y1], [x2, y2]],
-            type=wtype,
-            thickness_m=0.4 if wtype == "exterior" else 0.15,
-        ))
+    def emit(lines: dict[float, list], horizontal: bool):
+        nonlocal wall_n
+        for c, intervals in sorted(lines.items()):
+            cuts = sorted({v for a, b, _ in intervals for v in (a, b)})
+            segs: list[tuple[float, float, frozenset]] = []
+            for i in range(len(cuts) - 1):
+                a, b = cuts[i], cuts[i + 1]
+                if b - a < 1e-6:
+                    continue
+                own = frozenset(r for x1, x2, r in intervals if x1 - 1e-6 <= a and b <= x2 + 1e-6)
+                if not own:
+                    continue
+                if segs and segs[-1][2] == own and abs(segs[-1][1] - a) < 1e-6:
+                    segs[-1] = (segs[-1][0], b, own)
+                else:
+                    segs.append((a, b, own))
+            for a, b, own in segs:
+                wall_n += 1
+                wtype = "interior" if len(own) > 1 else "exterior"
+                axis = [[a, c], [b, c]] if horizontal else [[c, a], [c, b]]
+                wall = WallPlan(id=f"w{wall_n}", axis=axis, type=wtype,
+                                thickness_m=0.4 if wtype == "exterior" else 0.15)
+                walls.append(wall)
+                owners[wall.id] = own
 
-    return walls
+    emit(horiz, True)
+    emit(vert, False)
+    return walls, owners
 
 
-def _openings_from_adjacency(
-    walls: list[WallPlan],
-    adjacency: list[list[str]],
-    polygons: dict[str, list[list[float]]],
-) -> list[OpeningPlan]:
-    """Размещает двери между смежными помещениями и окна по внешним стенам."""
-    openings = []
+# ──────────────────────────────── проёмы ────────────────────────────────────
 
-    for wall in walls:
-        (x1, y1), (x2, y2) = wall.axis
-        length = math.sqrt((x2-x1)**2 + (y2-y1)**2)
-        if length < 0.5:
+def _seg_len(wall: WallPlan) -> float:
+    (x1, y1), (x2, y2) = wall.axis
+    return math.hypot(x2 - x1, y2 - y1)
+
+
+def _bbox_area(poly: list[list[float]]) -> float:
+    xs = [p[0] for p in poly]
+    ys = [p[1] for p in poly]
+    return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def _place_openings(walls: list[WallPlan], owners: dict, polygons: dict,
+                    cats: dict, level: int, fd: float) -> list[OpeningPlan]:
+    """Двери и окна как на реальных планах: вход на фасаде (этаж 0), двери
+    комнат — от прихожей/гостиной-хаба (fallback: любая внутренняя стена,
+    чтобы у каждой комнаты гарантированно был доступ — это проверяет
+    house_norms), окна — только комнатам с needs_window, на их собственном
+    участке фасада."""
+    openings: list[OpeningPlan] = []
+    by_room: dict[str, list[WallPlan]] = {}
+    for w in walls:
+        for rid in owners[w.id]:
+            by_room.setdefault(rid, []).append(w)
+
+    hub = None
+    for pref in ("hall", "living"):
+        ids = sorted(rid for rid in polygons if cats.get(rid) == pref)
+        if ids:
+            hub = ids[0]
+            break
+    if hub is None:
+        hub = max(sorted(polygons), key=lambda rid: _bbox_area(polygons[rid]))
+
+    door_w = _RULES["door_width_m"]
+    entry_wall_id = None
+
+    if level == 0:
+        exterior = [w for w in by_room.get(hub, []) if w.type == "exterior"]
+        facade = [w for w in exterior
+                  if abs(w.axis[0][1]) < 1e-6 and abs(w.axis[1][1]) < 1e-6]
+        pick = facade or exterior
+        if pick:
+            w = max(pick, key=_seg_len)
+            length = _seg_len(w)
+            if length >= 1.0:
+                dw = min(_RULES["entry_door_width_m"], max(0.8, length - 0.3))
+                openings.append(OpeningPlan(wall=w.id, kind="door",
+                                            offset_m=max(0.0, (length - dw) / 2),
+                                            width_m=dw, height_m=2.1, sill_m=0.0))
+                entry_wall_id = w.id
+
+    for rid in sorted(polygons):
+        if rid == hub:
+            continue  # хаб получает двери со стороны соседей + входную
+        cand = [w for w in by_room.get(rid, []) if w.type == "interior" and _seg_len(w) >= door_w + 0.2]
+        if not cand:
+            cand = [w for w in by_room.get(rid, []) if w.type == "interior" and _seg_len(w) >= 0.75]
+        if not cand:
             continue
 
-        if wall.type == "interior":
-            # Дверь в середине стены
-            openings.append(OpeningPlan(
-                wall=wall.id,
-                kind="door",
-                offset_m=length/2 - 0.45,
-                width_m=0.9,
-                height_m=2.1,
-                sill_m=0.0,
-            ))
-        else:
-            # Окно на внешней стене. Порог раньше был length > 3.0 м — с
-            # прежним treemap (без учёта min_width_m) узкие комнаты почти
-            # всегда получали короткий сегмент внешней стены и оставались
-            # вовсе без окна (см. house_norms.py: "не примыкает к внешней
-            # стене с окном"), даже физически её касаясь. Однорядная
-            # раскладка с min_width_m делает сегменты стен более
-            # предсказуемыми (обычно ≥ нормативной ширины комнаты), так что
-            # порог снижен до практического минимума для оконного блока.
-            if length > 1.0:
-                win_w = min(2.4, max(0.6, length * 0.6))
-                openings.append(OpeningPlan(
-                    wall=wall.id,
-                    kind="window",
-                    offset_m=max(0.0, (length - win_w) / 2),
-                    width_m=win_w,
-                    height_m=1.5,
-                    sill_m=0.9,
-                ))
-                if length > 6.0:
-                    win_w2 = min(2.4, length * 0.3)
-                    openings.append(OpeningPlan(
-                        wall=wall.id,
-                        kind="window",
-                        offset_m=length - 1.0 - win_w2,
-                        width_m=win_w2,
-                        height_m=1.5,
-                        sill_m=0.9,
-                    ))
+        def door_rank(w):
+            others = owners[w.id] - {rid}
+            if hub in others:
+                rank = 2
+            elif any(cats.get(o) not in ("wet", "utility") for o in others):
+                rank = 1
+            else:
+                rank = 0
+            return (rank, _seg_len(w))
 
+        w = max(cand, key=door_rank)
+        length = _seg_len(w)
+        dw = door_w if length >= door_w + 0.2 else round(max(0.7, length - 0.15), 2)
+        openings.append(OpeningPlan(wall=w.id, kind="door",
+                                    offset_m=max(0.0, (length - dw) / 2),
+                                    width_m=dw, height_m=2.1, sill_m=0.0))
+
+    for rid in sorted(polygons):
+        if not _needs_window(cats.get(rid, "other")):
+            continue
+        exterior = [w for w in by_room.get(rid, [])
+                    if w.type == "exterior" and w.id != entry_wall_id]
+        facade = [w for w in exterior
+                  if abs(w.axis[0][1] - w.axis[1][1]) < 1e-9
+                  and (abs(w.axis[0][1]) < 1e-6 or abs(w.axis[0][1] - fd) < 1e-6)]
+        pick = facade or exterior
+        if not pick:
+            continue
+        w = max(pick, key=_seg_len)
+        length = _seg_len(w)
+        if length <= 0.9:
+            continue
+        if length > 6.0:
+            ww = min(2.4, length * 0.25)
+            for center in (0.25, 0.75):
+                openings.append(OpeningPlan(wall=w.id, kind="window",
+                                            offset_m=max(0.0, length * center - ww / 2),
+                                            width_m=ww, height_m=1.5, sill_m=0.9))
+        else:
+            ww = min(2.4, max(0.6, length * 0.5))
+            openings.append(OpeningPlan(wall=w.id, kind="window",
+                                        offset_m=max(0.0, (length - ww) / 2),
+                                        width_m=ww, height_m=1.5, sill_m=0.9))
     return openings
 
+
+# ─────────────────────────────── основной вход ──────────────────────────────
 
 def generate_floor_plan(program: BuildingProgram) -> FloorPlan:
     """Основная функция: BuildingProgram → FloorPlan."""
@@ -166,29 +304,25 @@ def generate_floor_plan(program: BuildingProgram) -> FloorPlan:
 
     for level in range(program.storeys):
         elevation = level * program.ceiling_height_m
-
-        # Помещения этого этажа
         level_rooms = [r for r in program.rooms if r.storey == level]
         if not level_rooms:
             storeys_data.append(StoreyPlan(level=level, elevation_m=elevation))
             continue
 
-        # Treemap
-        areas = [r.area_m2 for r in level_rooms]
-        min_widths = [r.min_width_m for r in level_rooms]
-        rects = _squarified_treemap(areas, fw, fd, min_widths)
+        metas = [(r, classify_room(r.type, r.name)) for r in level_rooms]
 
-        # Строим полигоны
-        polygons = {}
-        for i, rect in enumerate(rects):
-            if rect:
-                polygons[level_rooms[i].id] = rect
+        polygons = cats = None
+        tpl = match_template([c for _, c in metas], fw / fd if fd else 1.0, level)
+        if tpl is not None:
+            try:
+                polygons, cats = apply_template(tpl, metas, fw, fd)
+            except ValueError:
+                polygons = None
+        if polygons is None:
+            polygons, cats = _zoned_polygons(metas, fw, fd)
 
-        # Стены
-        walls = _walls_from_rooms(polygons, 0.3)
-
-        # Проёмы
-        openings = _openings_from_adjacency(walls, program.adjacency, polygons)
+        walls, owners = _walls_from_rooms(polygons)
+        openings = _place_openings(walls, owners, polygons, cats, level, fd)
 
         storeys_data.append(StoreyPlan(
             level=level,
@@ -198,14 +332,13 @@ def generate_floor_plan(program: BuildingProgram) -> FloorPlan:
             openings=openings,
         ))
 
-    # Лестница (если >1 этаж)
     stairs = []
     if program.storeys > 1:
         stairs.append(StairPlan(
             from_level=0,
             to_level=1,
             shape="L",
-            footprint=[[fw-3, 0], [fw, 0], [fw, 2.5], [fw-3, 2.5]],
+            footprint=[[fw - 3, 0], [fw, 0], [fw, 2.5], [fw - 3, 2.5]],
         ))
 
     return FloorPlan(storeys=storeys_data, stairs=stairs)

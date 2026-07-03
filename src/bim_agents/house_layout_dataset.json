@@ -1,0 +1,54 @@
+{
+  "_comment": "Лёгкий датасет зонирования для house-солвера (частный сектор). Не ML-датасет с готовыми планами, а набор правил 'как раскладывают комнаты на реальных проектах': какая комната в какую ленту (front = у входа, back = приватная зона), в каком порядке вдоль ленты (order — living у угла, прихожая рядом с кухней и санузлом, мокрые зоны сгруппированы для общего стояка), кому нужно окно. Файл читается floorplan_agent.classify_room / generate_floor_plan; чтобы поменять поведение раскладки, достаточно править этот JSON, без кода.",
+  "room_categories": {
+    "hall": {
+      "keywords": ["прихож", "тамбур", "холл", "коридор", "hall", "corridor", "entrance", "entry", "vestib"],
+      "band": "front",
+      "order": 1,
+      "needs_window": false
+    },
+    "wet": {
+      "keywords": ["сануз", "ванн", "туалет", "уборн", "душ", "постироч", "bath", "wc", "toilet", "shower", "laundry"],
+      "band": "front",
+      "order": 3,
+      "needs_window": false
+    },
+    "kitchen": {
+      "keywords": ["кухн", "kitchen"],
+      "band": "front",
+      "order": 2,
+      "needs_window": true
+    },
+    "living": {
+      "keywords": ["гостин", "зал", "столов", "living", "dining", "lounge"],
+      "band": "front",
+      "order": 0,
+      "needs_window": true
+    },
+    "bedroom": {
+      "keywords": ["спальн", "детск", "кабинет", "bedroom", "child", "office", "nursery", "study"],
+      "band": "back",
+      "order": 0,
+      "needs_window": true
+    },
+    "utility": {
+      "keywords": ["котельн", "топочн", "кладов", "гардероб", "гараж", "boiler", "storage", "wardrobe", "garage", "pantry"],
+      "band": "front",
+      "order": 4,
+      "needs_window": false
+    },
+    "other": {
+      "keywords": [],
+      "band": "any",
+      "order": 5,
+      "needs_window": true
+    }
+  },
+  "rules": {
+    "min_rooms_for_two_bands": 4,
+    "min_depth_for_two_bands_m": 5.5,
+    "min_band_depth_m": 2.5,
+    "entry_door_width_m": 1.0,
+    "door_width_m": 0.9
+  }
+}

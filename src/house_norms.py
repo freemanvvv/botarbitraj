@@ -26,9 +26,18 @@ from src.floorplan.norms import get_room_constraints
 _KEYWORDS: list[tuple[str, str]] = [
     ("kitchen", "kitchen"), ("кухня", "kitchen"),
     ("bathroom", "bathroom"), ("ванная", "bathroom"), ("санузел", "bathroom"),
-    ("wc", "wc"), ("туалет", "wc"), ("уборная", "wc"),
+    ("душ", "bathroom"), ("постироч", "bathroom"), ("laundry", "bathroom"), ("shower", "bathroom"),
+    ("wc", "wc"), ("туалет", "wc"), ("уборная", "wc"), ("toilet", "wc"),
     ("hallway", "hallway"), ("entrance", "hallway"), ("прихожая", "hallway"), ("коридор", "hallway"),
+    ("тамбур", "hallway"), ("холл", "hallway"), ("corridor", "hallway"),
+    # Подсобные без собственной категории норм — ограничения как у
+    # прихожей (малая мин. ширина, окно не требуется): раньше они падали в
+    # 'living' и ложно требовали 8 м² и окно у котельной/кладовой.
+    ("кладов", "hallway"), ("гардероб", "hallway"), ("котельн", "hallway"),
+    ("топочн", "hallway"), ("гараж", "hallway"), ("garage", "hallway"),
+    ("storage", "hallway"), ("boiler", "hallway"), ("pantry", "hallway"), ("wardrobe", "hallway"),
     ("bedroom", "bedroom"), ("спальня", "bedroom"), ("детская", "bedroom"), ("child", "bedroom"),
+    ("кабинет", "bedroom"), ("office", "bedroom"), ("nursery", "bedroom"),
     ("living", "living"), ("гостиная", "living"), ("зал", "living"),
 ]
 
@@ -55,26 +64,32 @@ def _room_bbox(polygon: list[list[float]]) -> tuple[float, float, float, float]:
     return min(xs), min(ys), max(xs) - min(xs), max(ys) - min(ys)
 
 
-def _edge_key(p1, p2, tol=4):
-    # tol должен совпадать с округлением в
-    # bim_agents/floorplan_agent.py::_walls_from_rooms (там же tol=4) —
-    # wall.axis уже хранит координаты, округлённые до 4 знаков. Двойное
-    # округление (сюда round(x,3) поверх уже round(x,4)) даёт разные
-    # результаты для чисел вида 6.3745: round(6.3745,3)==6.375, тогда как
-    # прямое round(6.374468...,3) с исходного полигона комнаты даёт 6.374 —
-    # ключи расходились, и _walls_touching_room не находил стены комнаты,
-    # из-за чего внутренние комнаты ложно считались без окна на внешней
-    # стене.
-    return tuple(sorted((tuple(round(c, tol) for c in p1), tuple(round(c, tol) for c in p2))))
-
-
-def _walls_touching_room(polygon: list[list[float]], walls: list) -> list:
+def _walls_touching_room(polygon: list[list[float]], walls: list, tol: float = 0.02) -> list:
+    """Стены, лежащие на границе комнаты. Сравнение по коллинеарному
+    перекрытию, а не по точному равенству рёбер: floorplan_agent режет стены
+    на СЕГМЕНТЫ по владельцам (стык двух лент с разной нарезкой), поэтому
+    участок стены — как правило, лишь часть ребра полигона комнаты, и точное
+    сравнение целых рёбер (как здесь было раньше) не находило бы ни одной
+    стены."""
     n = len(polygon)
-    edges = {_edge_key(polygon[i], polygon[(i + 1) % n]) for i in range(n)}
+    edges = [(polygon[i], polygon[(i + 1) % n]) for i in range(n)]
     touching = []
     for wall in walls:
-        if _edge_key(wall.axis[0], wall.axis[1]) in edges:
-            touching.append(wall)
+        (wx1, wy1), (wx2, wy2) = wall.axis
+        wall_horizontal = abs(wy1 - wy2) <= tol
+        for p1, p2 in edges:
+            edge_horizontal = abs(p1[1] - p2[1]) <= tol
+            if wall_horizontal and edge_horizontal and abs(wy1 - p1[1]) <= tol:
+                lo, hi = sorted((p1[0], p2[0]))
+                a, b = sorted((wx1, wx2))
+            elif not wall_horizontal and not edge_horizontal and abs(wx1 - p1[0]) <= tol:
+                lo, hi = sorted((p1[1], p2[1]))
+                a, b = sorted((wy1, wy2))
+            else:
+                continue
+            if min(hi, b) - max(lo, a) > tol:
+                touching.append(wall)
+                break
     return touching
 
 

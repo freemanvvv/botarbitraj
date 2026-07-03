@@ -1,0 +1,92 @@
+{
+  "_comment": "Лёгкий датасет планировок «частного сектора» — сид-библиотека проверенных топологий (как в RPLAN/CubiCasa5k, но вручную отобранные и в компактном виде). Каждый шаблон — прямоугольная мозаика в нормированных координатах: x_cuts/y_cuts — доли габарита (0..1), комнаты ссылаются на ИНДЕКСЫ разрезов (cx0..cy1), поэтому мозаика по построению без щелей и наложений (это проверяет tests/test_house_layout.py). y=0 — фасад со входом. Подбор: точное совпадение мультимножества категорий комнат + близость соотношения сторон (см. layout_templates.py). Подгонка под габариты пользователя параметрическая: толщина стен и ширины дверей/окон фиксированы, а сетка разрезов перераспределяется под целевые площади комнат — тот же принцип 'масштабирование пустот, не картинки'. Схема совместима с векторными датасетами (RPLAN, CubiCasa5k SVG): конвертер должен привести план к mosaic-виду и записать сюда же.",
+  "templates": [
+    {
+      "id": "ground_l-k-h-w",
+      "description": "1-й этаж: гостиная слева во всю глубину, прихожая по центру у входа, санузел рядом, кухня сзади",
+      "storey_role": "ground",
+      "aspect": 1.15,
+      "x_cuts": [0.0, 0.45, 0.75, 1.0],
+      "y_cuts": [0.0, 0.45, 1.0],
+      "rooms": [
+        {"slot": "living",  "category": "living",  "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 2},
+        {"slot": "hall",    "category": "hall",    "cx0": 1, "cx1": 2, "cy0": 0, "cy1": 1},
+        {"slot": "wet",     "category": "wet",     "cx0": 2, "cx1": 3, "cy0": 0, "cy1": 1},
+        {"slot": "kitchen", "category": "kitchen", "cx0": 1, "cx1": 3, "cy0": 1, "cy1": 2}
+      ]
+    },
+    {
+      "id": "ground_l-k-h-w-u",
+      "description": "1-й этаж с гаражом/котельной: технич. помещение у фасада слева, прихожая по центру, кухня и гостиная сзади",
+      "storey_role": "ground",
+      "aspect": 1.25,
+      "x_cuts": [0.0, 0.4, 0.7, 1.0],
+      "y_cuts": [0.0, 0.4, 1.0],
+      "rooms": [
+        {"slot": "utility", "category": "utility", "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 1},
+        {"slot": "living",  "category": "living",  "cx0": 0, "cx1": 1, "cy0": 1, "cy1": 2},
+        {"slot": "hall",    "category": "hall",    "cx0": 1, "cx1": 2, "cy0": 0, "cy1": 1},
+        {"slot": "wet",     "category": "wet",     "cx0": 2, "cx1": 3, "cy0": 0, "cy1": 1},
+        {"slot": "kitchen", "category": "kitchen", "cx0": 1, "cx1": 3, "cy0": 1, "cy1": 2}
+      ]
+    },
+    {
+      "id": "single_l-k-h-w-b",
+      "description": "Одноэтажный с 1 спальней: санузел у входа слева, прихожая по центру, кухня справа, спальня и гостиная сзади",
+      "storey_role": "any",
+      "aspect": 1.2,
+      "x_cuts": [0.0, 0.35, 0.55, 1.0],
+      "y_cuts": [0.0, 0.45, 1.0],
+      "rooms": [
+        {"slot": "wet",     "category": "wet",     "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 1},
+        {"slot": "hall",    "category": "hall",    "cx0": 1, "cx1": 2, "cy0": 0, "cy1": 1},
+        {"slot": "kitchen", "category": "kitchen", "cx0": 2, "cx1": 3, "cy0": 0, "cy1": 1},
+        {"slot": "bedroom", "category": "bedroom", "cx0": 0, "cx1": 2, "cy0": 1, "cy1": 2},
+        {"slot": "living",  "category": "living",  "cx0": 2, "cx1": 3, "cy0": 1, "cy1": 2}
+      ]
+    },
+    {
+      "id": "single_l-k-h-w-b-b",
+      "description": "Одноэтажный с 2 спальнями: гостиная слева во всю глубину, прихожая в центре, санузел и спальня у фасада, кухня и спальня сзади",
+      "storey_role": "any",
+      "aspect": 1.3,
+      "x_cuts": [0.0, 0.33, 0.66, 0.83, 1.0],
+      "y_cuts": [0.0, 0.5, 1.0],
+      "rooms": [
+        {"slot": "living",    "category": "living",  "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 2},
+        {"slot": "hall",      "category": "hall",    "cx0": 1, "cx1": 2, "cy0": 0, "cy1": 1},
+        {"slot": "wet",       "category": "wet",     "cx0": 2, "cx1": 3, "cy0": 0, "cy1": 1},
+        {"slot": "bedroom_2", "category": "bedroom", "cx0": 3, "cx1": 4, "cy0": 0, "cy1": 1},
+        {"slot": "kitchen",   "category": "kitchen", "cx0": 1, "cx1": 2, "cy0": 1, "cy1": 2},
+        {"slot": "bedroom_1", "category": "bedroom", "cx0": 2, "cx1": 4, "cy0": 1, "cy1": 2}
+      ]
+    },
+    {
+      "id": "upper_b-b-w",
+      "description": "2-й этаж: 2 спальни, санузел над мокрой зоной 1-го этажа",
+      "storey_role": "upper",
+      "aspect": 1.15,
+      "x_cuts": [0.0, 0.5, 1.0],
+      "y_cuts": [0.0, 0.45, 1.0],
+      "rooms": [
+        {"slot": "bedroom_1", "category": "bedroom", "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 2},
+        {"slot": "wet",       "category": "wet",     "cx0": 1, "cx1": 2, "cy0": 0, "cy1": 1},
+        {"slot": "bedroom_2", "category": "bedroom", "cx0": 1, "cx1": 2, "cy0": 1, "cy1": 2}
+      ]
+    },
+    {
+      "id": "upper_b-b-b-w",
+      "description": "2-й этаж: 3 спальни + санузел, спальни по задней (тихой) стороне и слева",
+      "storey_role": "upper",
+      "aspect": 1.15,
+      "x_cuts": [0.0, 0.5, 1.0],
+      "y_cuts": [0.0, 0.45, 1.0],
+      "rooms": [
+        {"slot": "bedroom_1", "category": "bedroom", "cx0": 0, "cx1": 1, "cy0": 1, "cy1": 2},
+        {"slot": "bedroom_2", "category": "bedroom", "cx0": 1, "cx1": 2, "cy0": 1, "cy1": 2},
+        {"slot": "bedroom_3", "category": "bedroom", "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 1},
+        {"slot": "wet",       "category": "wet",     "cx0": 1, "cx1": 2, "cy0": 0, "cy1": 1}
+      ]
+    }
+  ]
+}
