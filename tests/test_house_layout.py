@@ -123,6 +123,57 @@ def test_unknown_composition_falls_back_to_two_bands():
     assert len(ys) == 3  # 0, граница лент, 9
 
 
+def test_match_template_is_tolerant_to_extra_same_type_rooms():
+    """Ближайший подбор: состав с ЛИШНИМИ комнатами того же типа (4 спальни
+    против шаблона на 3) всё равно находит шаблон, а не уходит в fallback."""
+    # точное совпадение по-прежнему работает
+    assert match_template(["bedroom", "bedroom", "bedroom", "wet"], 1.15, 1)["id"] == "upper_b-b-b-w"
+    # 4 спальни + санузел → тот же шаблон (4-я добавится делением ячейки)
+    assert match_template(["bedroom", "bedroom", "bedroom", "bedroom", "wet"], 1.15, 1)["id"] == "upper_b-b-b-w"
+    # чужой тип, которого нет в шаблоне → None (уйдёт в fallback)
+    assert match_template(["bedroom", "bedroom", "wet", "kitchen"], 1.15, 1) is None
+
+
+def test_apply_template_places_all_rooms_when_program_has_extras():
+    """apply_template должен разместить ВСЕ комнаты (включая лишние сверх
+    ячеек шаблона) без наложений и щелей, покрыв footprint целиком."""
+    program = BuildingProgram(
+        project_name="Т", storeys=2, footprint={"width_m": 12, "depth_m": 10},
+        rooms=[
+            Room(id="liv", name="Гостиная", storey=0, area_m2=28, type="IfcSpace:LIVING", min_width_m=3.5),
+            Room(id="kit", name="Кухня", storey=0, area_m2=14, type="IfcSpace:KITCHEN", min_width_m=2.5),
+            Room(id="hall", name="Прихожая", storey=0, area_m2=6, type="IfcSpace:HALLWAY", min_width_m=1.5),
+            Room(id="wc0", name="Санузел", storey=0, area_m2=5, type="IfcSpace:BATHROOM", min_width_m=1.5),
+            Room(id="b1", name="Спальня 1", storey=1, area_m2=18, type="IfcSpace:BEDROOM", min_width_m=3.0),
+            Room(id="b2", name="Спальня 2", storey=1, area_m2=15, type="IfcSpace:BEDROOM", min_width_m=2.8),
+            Room(id="b3", name="Спальня 3", storey=1, area_m2=14, type="IfcSpace:BEDROOM", min_width_m=2.8),
+            Room(id="b4", name="Спальня 4", storey=1, area_m2=12, type="IfcSpace:BEDROOM", min_width_m=2.8),
+            Room(id="wc1", name="Санузел 2", storey=1, area_m2=5, type="IfcSpace:BATHROOM", min_width_m=1.5),
+        ],
+    )
+    fp = generate_floor_plan(program)
+    # все комнаты размещены
+    placed = sum(len(s.rooms) for s in fp.storeys)
+    assert placed == 9
+    # этаж 1 (4 спальни + санузел = 5 комнат) собран из шаблона на 3 спальни
+    upper = next(s for s in fp.storeys if s.level == 1)
+    assert len(upper.rooms) == 5
+    # мозаика без наложений/щелей: сумма площадей = footprint, нет вытянутых
+    for storey in fp.storeys:
+        total = sum((max(p[0] for p in rp.polygon) - min(p[0] for p in rp.polygon)) *
+                    (max(p[1] for p in rp.polygon) - min(p[1] for p in rp.polygon))
+                    for rp in storey.rooms)
+        assert abs(total - 12.0 * 10.0) < 1e-2
+    # нормы проходят и комнаты не «кишки»
+    assert validate_house_plan(program, fp) == []
+    worst = 0.0
+    for storey in fp.storeys:
+        for rp in storey.rooms:
+            w, h = _bbox(rp.polygon)
+            worst = max(worst, max(w, h) / min(w, h))
+    assert worst < 3.0
+
+
 def test_fallback_grids_deep_band_instead_of_corridor_rooms():
     """Регрессия: раньше зонированный fallback клал все комнаты ленты в ОДИН
     ряд на всю глубину — на глубоком узком участке комнаты вытягивались в
