@@ -19,3 +19,4 @@ Pillow>=10.0,<13.0
 beautifulsoup4>=4.12,<5.0
 opencv-python-headless>=4.9,<5.0
 shapely>=2.0,<3.0
+kagglehub>=0.2.0,<1.0

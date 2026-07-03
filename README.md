@@ -37,6 +37,34 @@ pip install -r requirements.txt
 
 Требования: Python 3.12, LM Studio v0.4+, Apple Metal (для Mac)
 
+## 📊 Загрузка датасетов (Kaggle)
+
+Расширьте базу знаний проекта, загрузив датасеты с Kaggle:
+
+```bash
+# 1. Установить kagglehub
+pip install kagglehub
+
+# 2. Аутентифицироваться на Kaggle
+kagglehub auth login
+
+# 3. Загрузить датасет (например, rplan-dataset2025)
+python scripts/download_kaggle_dataset.py \
+  --dataset "lkerkarabulut/rplan-dataset2025" \
+  --integrate-rag
+
+# 4. Быстрая загрузка (примечание)
+python examples/quick_kaggle_load.py
+```
+
+**Популярные датасеты:**
+- 🏢 `lkerkarabulut/rplan-dataset2025` — Floor plans и архитектурные чертежи
+- 🏗️ `devanshkhandelwal/construction-site-images` — Фотографии строительных площадок
+- 🏛️ `titir2/architectural-heritage-elements` — Элементы архитектурного наследия
+- 🏠 `jkuler/lol-buildings` — Архитектурные стили и здания
+
+После интеграции датасеты автоматически индексируются в ChromaDB и доступны через чат с RAG включён.
+
 ## Архитектура
 
 ```
