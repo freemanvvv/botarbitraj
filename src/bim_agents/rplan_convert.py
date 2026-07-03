@@ -260,6 +260,7 @@ def image_to_template(
     snap_tol_px: int = 4,
     min_room_px: int = 40,
     min_iou: float = 0.7,
+    reasons=None,
 ) -> dict | None:
     """RPLAN (category+instance каналы, опц. boundary) → шаблон mosaic-формата
     или None.
@@ -267,7 +268,8 @@ def image_to_template(
     boundary (канал 0) используется только для ориентации входа (front door
     = 255). None — план не выражается чистой прямоугольной мозаикой
     (L-образные комнаты, щели, слишком грубое приближение). Это ожидаемо для
-    большой доли RPLAN и не является ошибкой."""
+    большой доли RPLAN и не является ошибкой. reasons (Counter) — для
+    диагностики причин отказа."""
     category = np.asarray(category)
     instance = np.asarray(instance)
     boundary = np.asarray(boundary) if boundary is not None else None
@@ -275,23 +277,32 @@ def image_to_template(
 
     rooms = _room_masks_by_instance(category, instance, min_room_px)
     return _emit_template(rooms, source_id=source_id, min_iou=min_iou,
-                          snap_tol_px=snap_tol_px, source_tag="rplan")
+                          snap_tol_px=snap_tol_px, source_tag="rplan", reasons=reasons)
 
 
 def _emit_template(rooms, *, source_id: str, min_iou: float, snap_tol_px: int,
-                   source_tag: str) -> dict | None:
+                   source_tag: str, reasons=None) -> dict | None:
     """Общее ядро обоих путей (PNG и Graph2Plan .mat): список комнат
     (cat, mask|None, bbox, area) → шаблон mosaic-формата или None, если
-    раскладка не мозаична или приближение слишком грубое (IoU < min_iou)."""
+    раскладка не мозаична или приближение слишком грубое (IoU < min_iou).
+
+    reasons (Counter|None): если задан, причина отказа пишется в него —
+    для диагностики выхода конвертера (сколько щелей/наложений и т.п.)."""
     if len(rooms) < 2:
+        if reasons is not None:
+            reasons["мало комнат (<2)"] += 1
         return None
     try:
         x_cuts, y_cuts, cell_ranges = _build_mosaic(rooms, snap_tol_px)
-    except _Rejected:
+    except _Rejected as e:
+        if reasons is not None:
+            reasons[str(e)] += 1
         return None
 
     iou = _mean_iou(rooms, x_cuts, y_cuts, cell_ranges)
     if iou < min_iou:
+        if reasons is not None:
+            reasons["грубое приближение (IoU<порога)"] += 1
         return None
 
     x0, x1 = x_cuts[0], x_cuts[-1]
@@ -403,14 +414,16 @@ def _graph2plan_plan_to_rooms(plan):
 
 
 def graph2plan_plan_to_template(plan, source_id: str, *, min_iou: float = 0.7,
-                                snap_tol_px: int = 4) -> dict | None:
+                                snap_tol_px: int = 4, reasons=None) -> dict | None:
     """Один план Graph2Plan → шаблон mosaic-формата или None."""
     rooms, door = _graph2plan_plan_to_rooms(plan)
     if len(rooms) < 2:
+        if reasons is not None:
+            reasons["мало комнат (<2)"] += 1
         return None
     rooms = _orient_boxes_entry_to_top(rooms, door)
     return _emit_template(rooms, source_id=source_id, min_iou=min_iou,
-                          snap_tol_px=snap_tol_px, source_tag="graph2plan")
+                          snap_tol_px=snap_tol_px, source_tag="graph2plan", reasons=reasons)
 
 
 def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
@@ -426,12 +439,14 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
         data = data[:limit]
 
     templates, seen = [], set()
+    reasons: Counter = Counter()
     stats = {"total": 0, "accepted": 0, "rejected": 0, "duplicate": 0, "error": 0}
     for i, plan in enumerate(data):
         stats["total"] += 1
         try:
             name = str(getattr(plan, "name", "")) or str(i)
-            tpl = graph2plan_plan_to_template(plan, name, min_iou=min_iou, snap_tol_px=snap_tol_px)
+            tpl = graph2plan_plan_to_template(plan, name, min_iou=min_iou,
+                                              snap_tol_px=snap_tol_px, reasons=reasons)
         except Exception:
             stats["error"] += 1
             continue
@@ -445,6 +460,7 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
         seen.add(sig)
         templates.append(tpl)
         stats["accepted"] += 1
+    stats["reasons"] = dict(reasons)
     return templates, stats
 
 
@@ -489,6 +505,7 @@ def convert_dir(
         files = files[:limit]
 
     templates, seen_sigs = [], set()
+    reasons: Counter = Counter()
     stats = {"total": 0, "accepted": 0, "rejected": 0, "duplicate": 0, "error": 0}
     for fname in files:
         stats["total"] += 1
@@ -497,7 +514,7 @@ def convert_dir(
                 os.path.join(input_dir, fname), category_channel, instance_channel)
             tpl = image_to_template(
                 category, instance, source_id=os.path.splitext(fname)[0],
-                boundary=boundary, snap_tol_px=snap_tol_px, min_iou=min_iou)
+                boundary=boundary, snap_tol_px=snap_tol_px, min_iou=min_iou, reasons=reasons)
         except Exception:
             stats["error"] += 1
             continue
@@ -511,6 +528,7 @@ def convert_dir(
         seen_sigs.add(sig)
         templates.append(tpl)
         stats["accepted"] += 1
+    stats["reasons"] = dict(reasons)
     return templates, stats
 
 
@@ -558,6 +576,10 @@ def _main(argv=None):
 
     print(f"файлов: {stats['total']}  принято: {stats['accepted']}  "
           f"отклонено: {stats['rejected']}  дублей: {stats['duplicate']}  ошибок: {stats['error']}")
+    if stats.get("reasons"):
+        print("причины отказа:")
+        for reason, n in sorted(stats["reasons"].items(), key=lambda kv: -kv[1]):
+            print(f"  {n:>6}  {reason}")
     print(f"записано в {args.out}")
 
 
