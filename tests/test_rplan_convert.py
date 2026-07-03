@@ -7,8 +7,11 @@ RPLAN распространяется по заявке, самих данны�
 import numpy as np
 import pytest
 
+from types import SimpleNamespace
+
 from src.bim_agents.rplan_convert import (
     image_to_template, convert_dir, _signature,
+    graph2plan_plan_to_template,
     RPLAN_FRONT_DOOR,
 )
 from src.bim_agents.layout_templates import load_templates
@@ -182,3 +185,75 @@ def test_converter_output_is_consumable_by_matcher(monkeypatch):
     got = layout_templates.match_template(["living", "kitchen"], aspect=tpl["aspect"], level=0)
     assert got is not None
     assert sorted(r["category"] for r in got["rooms"]) == ["kitchen", "living"]
+
+
+# ───────────────────────── Graph2Plan .mat (боксы) ──────────────────────────
+# Реальный .mat лежит только у пользователя (Kaggle-зеркало), поэтому struct-
+# элемент имитируем SimpleNamespace с теми же полями (rType/gtBoxNew/boundary/
+# name), что отдаёт scipy.io.loadmat(struct_as_record=False).
+
+def _g2p_plan(rtypes, boxes, door_row=None, name="p1"):
+    boundary = np.array([[10, 10, 0, 0], [20, 10, 0, 0]], dtype=np.int32)
+    if door_row is not None:
+        boundary = np.array(door_row, dtype=np.int32)
+    return SimpleNamespace(
+        rType=np.array(rtypes, dtype=np.int32),
+        gtBoxNew=np.array(boxes, dtype=np.int32),
+        boundary=boundary,
+        name=name,
+    )
+
+
+def test_graph2plan_boxes_clean_mosaic_accepted():
+    # living [0,0,50,100] | kitchen [50,0,100,100] — мозаика 1×2
+    plan = _g2p_plan([0, 2], [[0, 0, 50, 100], [50, 0, 100, 100]],
+                     door_row=[[10, 100, 0, 1], [30, 100, 0, 1]])  # дверь у y=100 (низ)
+    tpl = graph2plan_plan_to_template(plan, "g1", min_iou=0.7)
+    assert tpl is not None
+    assert tpl["_source"] == "graph2plan"
+    assert tpl["id"] == "graph2plan_g1"
+    assert sorted(r["category"] for r in tpl["rooms"]) == ["kitchen", "living"]
+    # инварианты мозаики (как у сид-датасета)
+    xs, ys = tpl["x_cuts"], tpl["y_cuts"]
+    assert xs[0] == 0.0 and xs[-1] == 1.0 and ys[0] == 0.0 and ys[-1] == 1.0
+    total = sum((xs[r["cx1"]] - xs[r["cx0"]]) * (ys[r["cy1"]] - ys[r["cy0"]]) for r in tpl["rooms"])
+    assert abs(total - 1.0) < 1e-6
+
+
+def test_graph2plan_rtype_maps_and_drops_balcony():
+    # living, balcony(9→drop), kitchen, bathroom → 3 комнаты, без балкона,
+    # но балкон оставил бы щель → план отклоняется (это ок и ожидаемо).
+    plan = _g2p_plan([0, 9, 2], [[0, 0, 50, 100], [50, 90, 100, 100], [50, 0, 100, 90]])
+    tpl = graph2plan_plan_to_template(plan, "g2", min_iou=0.7)
+    # балкон выброшен → в правой колонке щель y=90..100 → отказ
+    assert tpl is None
+
+
+def test_graph2plan_balcony_free_three_room_accepted():
+    # чистая мозаика без балкона: living | (kitchen над wet)
+    plan = _g2p_plan([0, 2, 3],
+                     [[0, 0, 50, 100], [50, 0, 100, 50], [50, 50, 100, 100]])
+    tpl = graph2plan_plan_to_template(plan, "g3", min_iou=0.7)
+    assert tpl is not None
+    assert sorted(r["category"] for r in tpl["rooms"]) == ["kitchen", "living", "wet"]
+    assert tpl["storey_role"] == "ground"  # есть кухня/гостиная, спален нет
+
+
+def test_graph2plan_front_door_orients_entry_to_y0():
+    # дверь у нижней грани (y=100) → после ориентации комнаты примыкают к y=0
+    plan = _g2p_plan([0, 2], [[0, 0, 50, 100], [50, 0, 100, 100]],
+                     door_row=[[10, 100, 0, 1], [30, 100, 0, 1]])
+    tpl = graph2plan_plan_to_template(plan, "g4", min_iou=0.7)
+    assert tpl is not None
+    assert any(r["cy0"] == 0 for r in tpl["rooms"])
+
+
+def test_graph2plan_output_consumable_by_matcher(monkeypatch):
+    from src.bim_agents import layout_templates
+    plan = _g2p_plan([0, 2, 3],
+                     [[0, 0, 50, 100], [50, 0, 100, 50], [50, 50, 100, 100]])
+    tpl = graph2plan_plan_to_template(plan, "g5", min_iou=0.7)
+    assert tpl is not None
+    monkeypatch.setattr(layout_templates, "load_templates", lambda: load_templates() + [tpl])
+    got = layout_templates.match_template(["living", "kitchen", "wet"], aspect=tpl["aspect"], level=0)
+    assert got is not None

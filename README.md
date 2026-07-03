@@ -88,15 +88,21 @@ House-движок раскладывает комнаты подбором пр
 квартир) конвертером:
 
 ```bash
-# RPLAN распространяется по заявке; данных в репозитории нет.
+# 1) канонический RPLAN — каталог 4-канальных PNG:
 python -m src.bim_agents.rplan_convert <каталог_с_png> \
     --append src/bim_agents/house_templates.json --limit 5000
+
+# 2) зеркало Graph2Plan (.mat со struct-массивом data: боксы gtBoxNew + rType),
+#    напр. Kaggle lkerkarabulut/rplan-dataset2025 → Network/data/data_train.mat:
+python -m src.bim_agents.rplan_convert <data_train.mat> --graph2plan \
+    --out rplan_templates.json --limit 5000
 ```
 
 Конвертер отбирает только планы, выражающиеся чистой прямоугольной мозаикой
 (slicing-раскладкой), L-образные/непрямоугольные отбрасывает, дедуплицирует
-и мапит 18 классов RPLAN в наши категории. Подробности — в docstring
-`src/bim_agents/rplan_convert.py`.
+и мапит 18 классов RPLAN в наши категории. Оба входных формата (PNG-каналы и
+Graph2Plan-боксы) идут через одно ядро сборки мозаики. Подробности — в
+docstring `src/bim_agents/rplan_convert.py`.
 
 ## Статус
 

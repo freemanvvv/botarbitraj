@@ -41,11 +41,18 @@ RPLAN распространяется по заявке, поэтому в эт
 структурно идентичных формату реальных PNG. CLI ниже — для запуска на вашей
 локальной копии RPLAN.
 
+Поддерживаются два входных формата:
+  • канонический RPLAN — каталог 4-канальных PNG (image_to_template);
+  • Graph2Plan .mat — struct-массив `data` с боксами комнат gtBoxNew + rType
+    + boundary (graph2plan_mat_to_templates); распространённое зеркало на
+    Kaggle (lkerkarabulut/rplan-dataset2025) — именно этот формат.
+
 CLI:
-    python -m src.bim_agents.rplan_convert <dir_с_png> --out out.json
-        [--limit N] [--append src/bim_agents/house_templates.json]
-        [--category-channel 1] [--instance-channel 2]
-        [--min-iou 0.7] [--snap 4]
+    # RPLAN PNG:
+    python -m src.bim_agents.rplan_convert <dir_с_png> --out out.json ...
+    # Graph2Plan .mat:
+    python -m src.bim_agents.rplan_convert <data_train.mat> --graph2plan --out out.json \
+        [--limit N] [--append src/bim_agents/house_templates.json] [--min-iou 0.7] [--snap 4]
 """
 from __future__ import annotations
 
@@ -207,16 +214,30 @@ def _build_mosaic(rooms, snap_tol: int):
 
 
 def _mean_iou(rooms, x_cuts, y_cuts, cell_ranges) -> float:
-    """Средний IoU реконструированного прямоугольника ячеек с исходной маской."""
+    """Средний IoU реконструированного прямоугольника ячеек с исходной формой.
+
+    Для PNG-пути форма — пиксельная маска (комната может быть непрямоугольной,
+    IoU честно ловит грубость приближения). Для box-пути (Graph2Plan) маски
+    нет, комната — уже прямоугольник bbox; IoU считается аналитически как
+    пересечение/объединение двух прямоугольников (bbox и снапнутая ячейка) —
+    он < 1, только если снап заметно сдвинул грани."""
     ious = []
-    for (_cat, mask, _bbox, _a), (ix0, ix1, iy0, iy1) in zip(rooms, cell_ranges):
+    for (_cat, mask, bbox, _a), (ix0, ix1, iy0, iy1) in zip(rooms, cell_ranges):
         rx0, rx1 = x_cuts[ix0], x_cuts[ix1]
         ry0, ry1 = y_cuts[iy0], y_cuts[iy1]
-        rect = np.zeros_like(mask, dtype=bool)
-        rect[ry0:ry1, rx0:rx1] = True
-        inter = int((mask & rect).sum())
-        union = int((mask | rect).sum()) or 1
-        ious.append(inter / union)
+        if mask is None:
+            bx0, by0, bx1, by1 = bbox
+            iw = max(0, min(bx1, rx1) - max(bx0, rx0))
+            ih = max(0, min(by1, ry1) - max(by0, ry0))
+            inter = iw * ih
+            union = (bx1 - bx0) * (by1 - by0) + (rx1 - rx0) * (ry1 - ry0) - inter
+            ious.append(inter / (union or 1))
+        else:
+            rect = np.zeros_like(mask, dtype=bool)
+            rect[ry0:ry1, rx0:rx1] = True
+            inter = int((mask & rect).sum())
+            union = int((mask | rect).sum()) or 1
+            ious.append(inter / union)
     return float(np.mean(ious)) if ious else 0.0
 
 
@@ -253,9 +274,17 @@ def image_to_template(
     category, instance, _k = _orient_entry_to_top(category, instance, boundary)
 
     rooms = _room_masks_by_instance(category, instance, min_room_px)
+    return _emit_template(rooms, source_id=source_id, min_iou=min_iou,
+                          snap_tol_px=snap_tol_px, source_tag="rplan")
+
+
+def _emit_template(rooms, *, source_id: str, min_iou: float, snap_tol_px: int,
+                   source_tag: str) -> dict | None:
+    """Общее ядро обоих путей (PNG и Graph2Plan .mat): список комнат
+    (cat, mask|None, bbox, area) → шаблон mosaic-формата или None, если
+    раскладка не мозаична или приближение слишком грубое (IoU < min_iou)."""
     if len(rooms) < 2:
         return None
-
     try:
         x_cuts, y_cuts, cell_ranges = _build_mosaic(rooms, snap_tol_px)
     except _Rejected:
@@ -284,16 +313,139 @@ def image_to_template(
 
     comp = ", ".join(f"{_RU_CAT.get(c, c)}×{n}" for c, n in sorted(Counter(cats).items()))
     return {
-        "id": f"rplan_{source_id}",
-        "description": f"RPLAN {len(rooms)} комн.: {comp}",
+        "id": f"{source_tag}_{source_id}",
+        "description": f"{source_tag.upper()} {len(rooms)} комн.: {comp}",
         "storey_role": _storey_role(set(cats)),
         "aspect": round(span_x / span_y, 2),
         "x_cuts": xs01,
         "y_cuts": ys01,
         "rooms": out_rooms,
-        "_source": "rplan",
+        "_source": source_tag,
         "_iou": round(iou, 3),
     }
+
+
+# ───────────────────────── Graph2Plan .mat (боксы) ──────────────────────────
+#
+# Дистрибутив Graph2Plan (HanHan55/Graph2plan) хранит RPLAN не как PNG, а как
+# .mat со struct-массивом `data`; у каждого плана поля:
+#   rType    (n,)   — тип каждой комнаты (та же таксономия 0..12, что PNG)
+#   gtBoxNew (n,4)  — прямоугольник комнаты [x0,y0,x1,y1] в пикселях 256²
+#   boundary (m,4)  — контур; строки с последним столбцом==1 задают ребро
+#                     входной двери (по ним ориентируем фасад к y=0)
+# Боксы — уже готовые прямоугольники, поэтому картинки обрабатывать не нужно:
+# кормим (cat, None, bbox, area) в то же ядро _emit_template, что и PNG-путь.
+
+GRAPH2PLAN_DOOR_FLAG_COL = 3  # индекс столбца-флага входной двери в boundary
+
+
+def _rot90_boxes(boxes, door, W):
+    """Один поворот раскладки на 90° CCW в кадре шириной W: точка (x,y)→(y,W−x)
+    (та же геометрия, что np.rot90 для картинки). Боксы пересобираются по
+    новым углам; дверь — тоже. Возвращает (боксы, дверь)."""
+    def rp(x, y):
+        return (y, W - x)
+    nb = []
+    for (x0, y0, x1, y1) in boxes:
+        cs = [rp(x0, y0), rp(x1, y0), rp(x1, y1), rp(x0, y1)]
+        xs = [c[0] for c in cs]; ys = [c[1] for c in cs]
+        nb.append((min(xs), min(ys), max(xs), max(ys)))
+    nd = rp(*door) if door is not None else None
+    return nb, nd
+
+
+def _orient_boxes_entry_to_top(rooms, door):
+    """Поворачивает боксы комнат так, чтобы входная дверь оказалась у y=0.
+    Без двери — как есть. rooms: [(cat, None, bbox, area)]."""
+    boxes = [r[2] for r in rooms]
+    if door is None:
+        return rooms
+    best_k, best_score, best_boxes = 0, None, boxes
+    cur_boxes, cur_door = boxes, door
+    for k in range(4):
+        if k > 0:
+            W = max(x1 for _x0, _y0, x1, _y1 in cur_boxes)
+            cur_boxes, cur_door = _rot90_boxes(cur_boxes, cur_door, W)
+        ys = [y for _x0, y0, _x1, y1 in cur_boxes for y in (y0, y1)]
+        y_min, y_max = min(ys), max(ys)
+        score = (cur_door[1] - y_min) / max(y_max - y_min, 1e-6)
+        if best_score is None or score < best_score:
+            best_k, best_score, best_boxes = k, score, cur_boxes
+    if best_k == 0:
+        return rooms
+    return [(c, m, best_boxes[i], (best_boxes[i][2] - best_boxes[i][0]) * (best_boxes[i][3] - best_boxes[i][1]))
+            for i, (c, m, _b, _a) in enumerate(rooms)]
+
+
+def _graph2plan_plan_to_rooms(plan):
+    """struct-элемент Graph2Plan → ([(cat, None, bbox, area)], door_xy|None)."""
+    rtype = np.atleast_1d(np.asarray(plan.rType).ravel())
+    boxes = np.asarray(plan.gtBoxNew)
+    if boxes.ndim == 1:
+        boxes = boxes.reshape(1, -1)
+    rooms = []
+    for i in range(min(len(rtype), len(boxes))):
+        cat = RPLAN_CLASS_TO_CATEGORY.get(int(rtype[i]))
+        if cat is None:
+            continue
+        x0, y0, x1, y1 = (int(v) for v in boxes[i][:4])
+        if x1 <= x0 or y1 <= y0:
+            continue
+        rooms.append((cat, None, (x0, y0, x1, y1), (x1 - x0) * (y1 - y0)))
+
+    door = None
+    b = np.asarray(plan.boundary)
+    if b.ndim == 2 and b.shape[1] > GRAPH2PLAN_DOOR_FLAG_COL:
+        dm = b[b[:, GRAPH2PLAN_DOOR_FLAG_COL] == 1]
+        if len(dm):
+            door = (float(dm[:, 0].mean()), float(dm[:, 1].mean()))
+    return rooms, door
+
+
+def graph2plan_plan_to_template(plan, source_id: str, *, min_iou: float = 0.7,
+                                snap_tol_px: int = 4) -> dict | None:
+    """Один план Graph2Plan → шаблон mosaic-формата или None."""
+    rooms, door = _graph2plan_plan_to_rooms(plan)
+    if len(rooms) < 2:
+        return None
+    rooms = _orient_boxes_entry_to_top(rooms, door)
+    return _emit_template(rooms, source_id=source_id, min_iou=min_iou,
+                          snap_tol_px=snap_tol_px, source_tag="graph2plan")
+
+
+def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
+                                min_iou: float = 0.7, snap_tol_px: int = 4) -> tuple[list[dict], dict]:
+    """Graph2Plan .mat (struct-массив `data`) → (уникальные шаблоны, статистика)."""
+    import scipy.io  # тяжёлая зависимость — грузим только когда реально нужен .mat
+
+    m = scipy.io.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
+    if "data" not in m:
+        raise ValueError(f"{mat_path}: нет ключа 'data' (это точно Graph2Plan .mat?)")
+    data = np.atleast_1d(m["data"])
+    if limit:
+        data = data[:limit]
+
+    templates, seen = [], set()
+    stats = {"total": 0, "accepted": 0, "rejected": 0, "duplicate": 0, "error": 0}
+    for i, plan in enumerate(data):
+        stats["total"] += 1
+        try:
+            name = str(getattr(plan, "name", "")) or str(i)
+            tpl = graph2plan_plan_to_template(plan, name, min_iou=min_iou, snap_tol_px=snap_tol_px)
+        except Exception:
+            stats["error"] += 1
+            continue
+        if tpl is None:
+            stats["rejected"] += 1
+            continue
+        sig = _signature(tpl)
+        if sig in seen:
+            stats["duplicate"] += 1
+            continue
+        seen.add(sig)
+        templates.append(tpl)
+        stats["accepted"] += 1
+    return templates, stats
 
 
 def _signature(tpl: dict) -> tuple:
@@ -365,8 +517,10 @@ def convert_dir(
 def _main(argv=None):
     import argparse
 
-    ap = argparse.ArgumentParser(description="Конвертер RPLAN → house_templates.json")
-    ap.add_argument("input_dir", help="каталог с RPLAN *.png")
+    ap = argparse.ArgumentParser(description="Конвертер RPLAN/Graph2Plan → house_templates.json")
+    ap.add_argument("input", help="каталог с RPLAN *.png (PNG-режим) ИЛИ путь к Graph2Plan .mat (--graph2plan)")
+    ap.add_argument("--graph2plan", action="store_true",
+                    help="input — это Graph2Plan .mat (struct-массив data), а не каталог PNG")
     ap.add_argument("--out", required=True, help="куда записать датасет шаблонов")
     ap.add_argument("--append", help="существующий house_templates.json — дописать в него (с дедупом)")
     ap.add_argument("--limit", type=int, default=None)
@@ -376,10 +530,14 @@ def _main(argv=None):
     ap.add_argument("--min-iou", type=float, default=0.7)
     args = ap.parse_args(argv)
 
-    templates, stats = convert_dir(
-        args.input_dir, limit=args.limit,
-        category_channel=args.category_channel, instance_channel=args.instance_channel,
-        snap_tol_px=args.snap, min_iou=args.min_iou)
+    if args.graph2plan:
+        templates, stats = graph2plan_mat_to_templates(
+            args.input, limit=args.limit, snap_tol_px=args.snap, min_iou=args.min_iou)
+    else:
+        templates, stats = convert_dir(
+            args.input, limit=args.limit,
+            category_channel=args.category_channel, instance_channel=args.instance_channel,
+            snap_tol_px=args.snap, min_iou=args.min_iou)
 
     if args.append:
         with open(args.append, encoding="utf-8") as f:
