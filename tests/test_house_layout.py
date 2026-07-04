@@ -283,3 +283,46 @@ def test_L_shaped_template_from_rplan_survives_full_pipeline(monkeypatch):
     for t in ("IfcWall", "IfcSlab", "IfcSpace", "IfcWindow", "IfcDoor"):
         for p in ifc.by_type(t):
             ifcopenshell.geom.create_shape(settings, p)  # не должно бросать
+
+
+def test_load_templates_is_cached_and_invalidates_on_mtime(tmp_path, monkeypatch):
+    """Регрессия на производительность: load_templates не должен перечитывать
+    файл на каждый вызов (на датасете RPLAN ~50 МБ это ~4 сек × N этажей).
+    Кэш по mtime: повторный вызов не читает файл, а изменение файла
+    подхватывается."""
+    import json
+    from src.bim_agents import layout_templates
+
+    f = tmp_path / "ht.json"
+    f.write_text(json.dumps({"templates": [
+        {"id": "a", "storey_role": "any", "aspect": 1.0,
+         "rooms": [{"slot": "living", "category": "living", "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 1}]}
+    ]}))
+    monkeypatch.setattr(layout_templates, "_TEMPLATES_PATH", str(f))
+    layout_templates._CACHE.clear()
+
+    reads = {"n": 0}
+    real_open = open
+    import builtins
+    def counting_open(path, *a, **k):
+        if str(path) == str(f):
+            reads["n"] += 1
+        return real_open(path, *a, **k)
+    monkeypatch.setattr(builtins, "open", counting_open)
+
+    t1 = layout_templates.load_templates()
+    t2 = layout_templates.load_templates()
+    assert reads["n"] == 1              # второй вызов — из кэша, файл не читался
+    assert t1 is t2                     # тот же объект
+
+    # индекс по набору категорий построен и находит шаблон
+    idx = layout_templates._catset_index()
+    assert frozenset(["living"]) in idx
+
+    # изменение файла (новый mtime) инвалидирует кэш
+    import os, time
+    time.sleep(0.01)
+    f.write_text(json.dumps({"templates": []}))
+    os.utime(str(f), None)
+    layout_templates.load_templates()
+    assert reads["n"] == 2

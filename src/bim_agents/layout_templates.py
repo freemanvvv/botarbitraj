@@ -33,9 +33,50 @@ _TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "house_templates.json"
 _MIN_STRIP_M = 0.9   # минимальная ширина колонки/ряда сетки после подгонки
 
 
+# Кэш загруженного датасета + индекс по набору категорий. Критично при
+# больших датасетах (RPLAN даёт десятки тысяч шаблонов): без кэша
+# load_templates перечитывал и парсил весь файл (~50 МБ = ~4 сек) на КАЖДЫЙ
+# вызов match_template, т.е. по 3 раза на 3-этажный дом. Кэш инвалидируется
+# по mtime файла (перегенерировал датасет → подхватится автоматически).
+_CACHE: dict = {}
+
+
+def _build_catset_index(templates: list[dict]) -> dict:
+    """{frozenset(категории комнат): [шаблоны]} — match_template рассматривает
+    только шаблоны с ТЕМ ЖЕ набором типов комнат, поэтому индекс сужает
+    перебор с десятков тысяч до единиц вместо линейного скана всего датасета."""
+    idx: dict = {}
+    for tpl in templates:
+        key = frozenset(r["category"] for r in tpl["rooms"])
+        idx.setdefault(key, []).append(tpl)
+    return idx
+
+
 def load_templates() -> list[dict]:
+    """Список шаблонов из house_templates.json (кэшируется по mtime файла)."""
+    try:
+        mtime = os.path.getmtime(_TEMPLATES_PATH)
+    except OSError:
+        mtime = None
+    c = _CACHE.get(_TEMPLATES_PATH)
+    if c is not None and c["mtime"] == mtime:
+        return c["templates"]
     with open(_TEMPLATES_PATH, encoding="utf-8") as f:
-        return json.load(f)["templates"]
+        templates = json.load(f)["templates"]
+    _CACHE[_TEMPLATES_PATH] = {"mtime": mtime, "templates": templates,
+                              "index": _build_catset_index(templates)}
+    return templates
+
+
+def _catset_index() -> dict:
+    """Индекс по набору категорий для актуального load_templates(). Для
+    реального файла — из кэша; при monkeypatch load_templates в тестах
+    (маленькие списки) строится на лету."""
+    templates = load_templates()
+    c = _CACHE.get(_TEMPLATES_PATH)
+    if c is not None and c["templates"] is templates:
+        return c["index"]
+    return _build_catset_index(templates)
 
 
 def match_template(room_cats: list[str], aspect: float, level: int) -> dict | None:
@@ -58,9 +99,12 @@ def match_template(room_cats: list[str], aspect: float, level: int) -> dict | No
     want), оно по-прежнему выигрывает. Если ничего не подошло — None (уходит
     в зонированный fallback)."""
     want = Counter(room_cats)
-    want_set = set(want)
+    want_set = frozenset(want)
     best, best_key = None, None
-    for tpl in load_templates():
+    # И polygon- (tc==want), и grid-шаблоны (set(tc)==want_set) требуют ТОГО
+    # ЖЕ набора категорий, что и запрос → берём только их из индекса, а не
+    # линейно сканируем весь датасет (десятки тысяч шаблонов).
+    for tpl in _catset_index().get(want_set, ()):
         role = tpl.get("storey_role", "any")
         if role == "ground" and level != 0:
             continue
