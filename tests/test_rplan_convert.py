@@ -374,3 +374,19 @@ def test_graph2plan_polygon_dedup_and_signature():
     t1 = graph2plan_plan_to_polygon_template(_g2p_poly_plan([0, 2], [L, K], "a"), "a")
     t2 = graph2plan_plan_to_polygon_template(_g2p_poly_plan([0, 2], [L, K], "b"), "b")
     assert _signature(t1) == _signature(t2)   # одинаковая форма → один ключ дедупа
+
+
+def test_cli_help_strings_are_well_formed():
+    """Регрессия: help-строка с сырым '%' (было '~1%') ломает argparse —
+    Python 3.14 падает уже при add_argument, 3.11 — при форматировании
+    --help. Прогоняем --help: он экспандит все help-строки (help % params),
+    поэтому ловит битые проценты на любой версии. Ожидаем SystemExit (норма
+    для --help), а не ValueError('badly formed help string')."""
+    import io
+    import contextlib
+    from src.bim_agents import rplan_convert
+    with contextlib.redirect_stdout(io.StringIO()):
+        try:
+            rplan_convert._main(["--help"])
+        except SystemExit:
+            pass  # так и должно быть

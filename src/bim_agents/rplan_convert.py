@@ -770,7 +770,7 @@ def _main(argv=None):
                     help="input — это Graph2Plan .mat (struct-массив data), а не каталог PNG")
     ap.add_argument("--polygons", action="store_true",
                     help="Graph2Plan: брать РЕАЛЬНЫЕ формы комнат (rBoundary), а не bbox'ы — "
-                         "включая Г-образные; приём почти полный вместо ~1%")
+                         "включая Г-образные; приём почти полный (bbox-режим брал лишь ~1 проц.)")
     ap.add_argument("--out", help="куда записать новый датасет (обязателен, если нет --append)")
     ap.add_argument("--append", help="существующий house_templates.json — дописать В НЕГО ЖЕ (in place, с дедупом)")
     ap.add_argument("--limit", type=int, default=None)
