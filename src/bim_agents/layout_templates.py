@@ -67,16 +67,29 @@ def match_template(room_cats: list[str], aspect: float, level: int) -> dict | No
         if role == "upper" and level == 0:
             continue
         tc = Counter(r["category"] for r in tpl["rooms"])
-        if set(tc) != want_set:
-            continue
-        if any(tc[c] > want[c] for c in tc):
-            continue
+        is_poly = _is_polygon_template(tpl)
+        if is_poly:
+            # polygon-шаблон хранит РЕАЛЬНЫЕ формы; лишние комнаты в него не
+            # доложить (произвольный полигон не делим) — нужен точный состав.
+            if tc != want:
+                continue
+        else:
+            if set(tc) != want_set:
+                continue
+            if any(tc[c] > want[c] for c in tc):
+                continue
         coverage = sum(tc.values())  # сколько комнат запроса шаблон закрепляет напрямую
         aspect_score = abs(math.log(max(aspect, 1e-3) / max(tpl.get("aspect", 1.0), 1e-3)))
-        key = (-coverage, aspect_score)  # больше покрытие → потом ближе aspect
+        # При равном покрытии polygon-шаблон (реальная форма) предпочтительнее
+        # прямоугольного grid-шаблона — 0 бьёт 1 в сортировке ключа.
+        key = (-coverage, 0 if is_poly else 1, aspect_score)
         if best_key is None or key < best_key:
             best, best_key = tpl, key
     return best
+
+
+def _is_polygon_template(tpl: dict) -> bool:
+    return tpl.get("_source") == "graph2plan_poly" or any("polygon" in r for r in tpl["rooms"])
 
 
 def _split_cell(x0: float, y0: float, x1: float, y1: float, areas: list[float]) -> list[list[list[float]]]:
@@ -236,6 +249,45 @@ def _drop_collinear(loop: list[tuple[int, int]]) -> list[tuple[int, int]]:
     return out or loop
 
 
+def _apply_polygon_template(tpl: dict, rooms_meta: list[tuple], fw: float, fd: float) -> tuple[dict, dict]:
+    """polygon-шаблон (rooms[i].polygon в 0..1, реальная форма комнаты) →
+    полигоны в метрах масштабированием под габариты. Комнаты программы
+    назначаются на слоты той же категории «большая комната → слот большей
+    площади». Состав должен совпадать точно (match_template это гарантирует
+    для polygon-шаблонов) — иначе ValueError и откат на fallback."""
+    def poly_area01(slot):
+        p = slot["polygon"]
+        s = 0.0
+        for i in range(len(p)):
+            x1, y1 = p[i]; x2, y2 = p[(i + 1) % len(p)]
+            s += x1 * y2 - x2 * y1
+        return abs(s) / 2
+
+    by_cat_slots: dict[str, list[dict]] = {}
+    for slot in tpl["rooms"]:
+        by_cat_slots.setdefault(slot["category"], []).append(slot)
+    for sl in by_cat_slots.values():
+        sl.sort(key=poly_area01, reverse=True)
+
+    by_cat_rooms: dict[str, list] = {}
+    for rm, cat in rooms_meta:
+        by_cat_rooms.setdefault(cat, []).append(rm)
+    for rms in by_cat_rooms.values():
+        rms.sort(key=lambda r: r.area_m2, reverse=True)
+
+    polygons, cats = {}, {}
+    for cat, slots in by_cat_slots.items():
+        rms = by_cat_rooms.get(cat, [])
+        if len(rms) != len(slots):
+            raise ValueError("состав комнат не совпал с polygon-шаблоном")
+        for rm, slot in zip(rms, slots):
+            polygons[rm.id] = [[round(x * fw, 4), round(y * fd, 4)] for x, y in slot["polygon"]]
+            cats[rm.id] = cat
+    if len(polygons) != len(rooms_meta):
+        raise ValueError("не все комнаты размещены polygon-шаблоном")
+    return polygons, cats
+
+
 def apply_template(tpl: dict, rooms_meta: list[tuple], fw: float, fd: float) -> tuple[dict, dict]:
     """Шаг 3: программа комнат + шаблон → полигоны в метрах.
 
@@ -251,7 +303,15 @@ def apply_template(tpl: dict, rooms_meta: list[tuple], fw: float, fd: float) -> 
     слота), затем полигон каждой комнаты строится из её прямоугольника(ов)
     в метрах (Г-образные — через _merge_unit_cells_to_loop, обход на уровне единичных ячеек сетки).
     Возвращает (polygons: id→polygon, cats: id→category).
+
+    polygon-шаблоны (реальные формы комнат из RPLAN/rBoundary) обрабатываются
+    отдельной веткой _apply_polygon_template: контуры лишь масштабируются под
+    габариты (сохраняя реальную форму и пропорции плана), без сеточного
+    refit'а под точные площади.
     """
+    if _is_polygon_template(tpl):
+        return _apply_polygon_template(tpl, rooms_meta, fw, fd)
+
     xs01, ys01 = tpl["x_cuts"], tpl["y_cuts"]
     slots = tpl["rooms"]
 

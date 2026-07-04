@@ -517,9 +517,135 @@ def graph2plan_plan_to_template(plan, source_id: str, *, min_iou: float = 0.7,
                           snap_tol_px=snap_tol_px, source_tag="graph2plan", reasons=reasons)
 
 
+# ───────────────── Graph2Plan .mat: РЕАЛЬНЫЕ полигоны (rBoundary) ─────────────
+#
+# gtBoxNew — только bbox комнаты (mosaic-путь выше принимает ~1% планов, лишь
+# прямоугольные раскладки). Но у Graph2Plan есть поле rBoundary — НАСТОЯЩИЙ
+# контур каждой комнаты (rectilinear-полигон, включая Г-образные). Берём его
+# как есть: форма однозначна (не bbox-приближение), поэтому наложений-по-
+# боксам нет и принимается почти всё. Такие шаблоны хранятся в polygon-виде
+# (rooms[i].polygon — нормированный контур 0..1), а движок деформирует их
+# масштабированием под габариты (apply_template в layout_templates.py). Весь
+# низлежащий пайплайн (стены/двери/IFC/SVG) уже умеет произвольные полигоны.
+
+def _poly_area(poly) -> float:
+    s = 0.0
+    n = len(poly)
+    for i in range(n):
+        x1, y1 = poly[i]
+        x2, y2 = poly[(i + 1) % n]
+        s += x1 * y2 - x2 * y1
+    return abs(s) / 2.0
+
+
+def _rot90_poly(poly, W):
+    """Один поворот полигона на 90° CCW в кадре ширины W: (x,y)→(y,W−x)."""
+    return [(y, W - x) for x, y in poly]
+
+
+def _dedup_consecutive(poly):
+    out = []
+    for p in poly:
+        if not out or (abs(out[-1][0] - p[0]) > 1e-6 or abs(out[-1][1] - p[1]) > 1e-6):
+            out.append(p)
+    if len(out) > 1 and abs(out[0][0] - out[-1][0]) < 1e-6 and abs(out[0][1] - out[-1][1]) < 1e-6:
+        out.pop()
+    return out
+
+
+def _graph2plan_plan_to_polygons(plan, min_area_px: float = 30.0):
+    """struct-элемент Graph2Plan → ([(cat, polygon)], door_xy|None) по rBoundary."""
+    rtype = np.atleast_1d(np.asarray(plan.rType).ravel())
+    rb = plan.rBoundary
+    # rBoundary — object-массив полигонов, по одному на комнату (индекс = rType)
+    rb_list = list(rb) if hasattr(rb, "__len__") and not isinstance(rb, np.ndarray) or (
+        isinstance(rb, np.ndarray) and rb.dtype == object) else [rb]
+    rooms = []
+    for i in range(min(len(rtype), len(rb_list))):
+        cat = RPLAN_CLASS_TO_CATEGORY.get(int(rtype[i]))
+        if cat is None:
+            continue
+        pts = np.asarray(rb_list[i])
+        if pts.ndim != 2 or pts.shape[0] < 3 or pts.shape[1] < 2:
+            continue
+        poly = _dedup_consecutive([(float(p[0]), float(p[1])) for p in pts])
+        if len(poly) < 3 or _poly_area(poly) < min_area_px:
+            continue
+        rooms.append((cat, poly))
+
+    door = None
+    b = np.asarray(plan.boundary)
+    if b.ndim == 2 and b.shape[1] > GRAPH2PLAN_DOOR_FLAG_COL:
+        dm = b[b[:, GRAPH2PLAN_DOOR_FLAG_COL] == 1]
+        if len(dm):
+            door = (float(dm[:, 0].mean()), float(dm[:, 1].mean()))
+    return rooms, door
+
+
+def _orient_polygons_entry_to_top(rooms, door):
+    """Поворот полигонов так, чтобы вход (door) оказался у y=0. rooms:[(cat,poly)]."""
+    if door is None:
+        return rooms
+    cur = [poly for _c, poly in rooms]
+    cur_door = door
+    best_k, best_score, best = 0, None, cur
+    for k in range(4):
+        if k > 0:
+            W = max(x for poly in cur for x, _y in poly)
+            cur = [_rot90_poly(poly, W) for poly in cur]
+            cur_door = _rot90_poly([cur_door], W)[0]
+        ys = [y for poly in cur for _x, y in poly]
+        y_min, y_max = min(ys), max(ys)
+        score = (cur_door[1] - y_min) / max(y_max - y_min, 1e-6)
+        if best_score is None or score < best_score:
+            best_k, best_score, best = k, score, cur
+    if best_k == 0:
+        return rooms
+    return [(rooms[i][0], best[i]) for i in range(len(rooms))]
+
+
+def graph2plan_plan_to_polygon_template(plan, source_id: str, *, reasons=None) -> dict | None:
+    """Один план Graph2Plan → polygon-шаблон (реальные формы комнат) или None."""
+    rooms, door = _graph2plan_plan_to_polygons(plan)
+    if len(rooms) < 2:
+        if reasons is not None:
+            reasons["мало комнат (<2)"] += 1
+        return None
+    rooms = _orient_polygons_entry_to_top(rooms, door)
+
+    allx = [x for _c, poly in rooms for x, _y in poly]
+    ally = [y for _c, poly in rooms for _x, y in poly]
+    x0, x1, y0, y1 = min(allx), max(allx), min(ally), max(ally)
+    span_x, span_y = (x1 - x0) or 1, (y1 - y0) or 1
+
+    cats = [c for c, _p in rooms]
+    seen: Counter = Counter()
+    out_rooms = []
+    for cat, poly in rooms:
+        seen[cat] += 1
+        slot = f"{cat}_{seen[cat]}" if cats.count(cat) > 1 else cat
+        norm = [[round((px - x0) / span_x, 4), round((py - y0) / span_y, 4)] for px, py in poly]
+        out_rooms.append({"slot": slot, "category": cat, "polygon": norm})
+
+    comp = ", ".join(f"{_RU_CAT.get(c, c)}×{n}" for c, n in sorted(Counter(cats).items()))
+    return {
+        "id": f"graph2plan_poly_{source_id}",
+        "description": f"RPLAN {len(rooms)} комн. (реальные формы): {comp}",
+        "storey_role": _storey_role(set(cats)),
+        "aspect": round(span_x / span_y, 2),
+        "rooms": out_rooms,
+        "_source": "graph2plan_poly",
+    }
+
+
 def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
-                                min_iou: float = 0.7, snap_tol_px: int = 4) -> tuple[list[dict], dict]:
-    """Graph2Plan .mat (struct-массив `data`) → (уникальные шаблоны, статистика)."""
+                                min_iou: float = 0.7, snap_tol_px: int = 4,
+                                polygons: bool = False) -> tuple[list[dict], dict]:
+    """Graph2Plan .mat (struct-массив `data`) → (уникальные шаблоны, статистика).
+
+    polygons=False — mosaic-путь по gtBoxNew (только прямоугольные раскладки,
+    ~1% приёма); polygons=True — polygon-путь по rBoundary (реальные формы
+    комнат, включая Г-образные; приём почти полный)."""
     import scipy.io  # тяжёлая зависимость — грузим только когда реально нужен .mat
 
     m = scipy.io.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
@@ -536,8 +662,11 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
         stats["total"] += 1
         try:
             name = str(getattr(plan, "name", "")) or str(i)
-            tpl = graph2plan_plan_to_template(plan, name, min_iou=min_iou,
-                                              snap_tol_px=snap_tol_px, reasons=reasons)
+            if polygons:
+                tpl = graph2plan_plan_to_polygon_template(plan, name, reasons=reasons)
+            else:
+                tpl = graph2plan_plan_to_template(plan, name, min_iou=min_iou,
+                                                  snap_tol_px=snap_tol_px, reasons=reasons)
         except Exception:
             stats["error"] += 1
             continue
@@ -556,11 +685,20 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
 
 
 def _signature(tpl: dict) -> tuple:
-    """Ключ дедупликации: состав + округлённая геометрия мозаики."""
+    """Ключ дедупликации: состав + округлённая геометрия."""
     cats = tuple(sorted(r["category"] for r in tpl["rooms"]))
+    if tpl.get("_source") == "graph2plan_poly":
+        # polygon-шаблон: геометрия — округлённые контуры комнат
+        shapes = frozenset(
+            (r["category"], tuple((round(x, 2), round(y, 2)) for x, y in r["polygon"]))
+            for r in tpl["rooms"])
+        return ("poly", cats, shapes)
     xs = tuple(round(v, 2) for v in tpl["x_cuts"])
     ys = tuple(round(v, 2) for v in tpl["y_cuts"])
-    cells = frozenset((r["category"], r["cx0"], r["cx1"], r["cy0"], r["cy1"]) for r in tpl["rooms"])
+    cells = frozenset(
+        (r["category"], tuple(tuple(c) for c in r["cells"])) if "cells" in r
+        else (r["category"], r["cx0"], r["cx1"], r["cy0"], r["cy1"])
+        for r in tpl["rooms"])
     return (cats, xs, ys, cells)
 
 
@@ -630,6 +768,9 @@ def _main(argv=None):
     ap.add_argument("input", help="каталог с RPLAN *.png (PNG-режим) ИЛИ путь к Graph2Plan .mat (--graph2plan)")
     ap.add_argument("--graph2plan", action="store_true",
                     help="input — это Graph2Plan .mat (struct-массив data), а не каталог PNG")
+    ap.add_argument("--polygons", action="store_true",
+                    help="Graph2Plan: брать РЕАЛЬНЫЕ формы комнат (rBoundary), а не bbox'ы — "
+                         "включая Г-образные; приём почти полный вместо ~1%")
     ap.add_argument("--out", help="куда записать новый датасет (обязателен, если нет --append)")
     ap.add_argument("--append", help="существующий house_templates.json — дописать В НЕГО ЖЕ (in place, с дедупом)")
     ap.add_argument("--limit", type=int, default=None)
@@ -641,7 +782,8 @@ def _main(argv=None):
 
     if args.graph2plan:
         templates, stats = graph2plan_mat_to_templates(
-            args.input, limit=args.limit, snap_tol_px=args.snap, min_iou=args.min_iou)
+            args.input, limit=args.limit, snap_tol_px=args.snap, min_iou=args.min_iou,
+            polygons=args.polygons)
     else:
         templates, stats = convert_dir(
             args.input, limit=args.limit,

@@ -303,3 +303,74 @@ def test_cli_append_writes_back_to_target_file(tmp_path):
 
     after = json.loads(target.read_text(encoding="utf-8"))["templates"]
     assert len(after) == 8   # 6 сидов + 2 новых, записано В ЦЕЛЕВОЙ файл
+
+
+# ─────────────── Graph2Plan polygon-путь (rBoundary, реальные формы) ─────────
+
+def _g2p_poly_plan(rtypes, polys, name="p1", door=None):
+    boundary = np.array(door if door is not None else [[10, 10, 0, 0], [20, 10, 0, 0]], dtype=np.int32)
+    rb = np.empty(len(polys), dtype=object)
+    for i, p in enumerate(polys):
+        rb[i] = np.array(p, dtype=np.int32)
+    return SimpleNamespace(rType=np.array(rtypes, dtype=np.int32), rBoundary=rb,
+                           boundary=boundary, name=name)
+
+
+def test_graph2plan_polygon_path_extracts_L_shape():
+    from src.bim_agents.rplan_convert import graph2plan_plan_to_polygon_template
+    # Г-образная гостиная (6 вершин) + прямоугольная кухня в вырезе
+    L = [[0, 0], [60, 0], [60, 40], [100, 40], [100, 100], [0, 100]]
+    K = [[60, 0], [100, 0], [100, 40], [60, 40]]
+    plan = _g2p_poly_plan([0, 2], [L, K], "L1")
+    tpl = graph2plan_plan_to_polygon_template(plan, "L1")
+    assert tpl is not None
+    assert tpl["_source"] == "graph2plan_poly"
+    living = next(r for r in tpl["rooms"] if r["category"] == "living")
+    assert "polygon" in living and len(living["polygon"]) == 6   # Г-форма сохранена
+    # контур нормирован в 0..1
+    assert all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in living["polygon"])
+
+
+def test_polygon_template_survives_full_pipeline(monkeypatch):
+    """polygon-шаблон Г-формы: match → apply (масштаб) → стены → IFC."""
+    from src.bim_agents.rplan_convert import graph2plan_plan_to_polygon_template
+    from src.bim_agents import layout_templates
+    from src.bim_agents.contracts import BuildingProgram, Room
+    from src.bim_agents.floorplan_agent import generate_floor_plan
+    from src.bim_agents.bim_agent import generate_ifc
+
+    L = [[0, 0], [60, 0], [60, 40], [100, 40], [100, 100], [0, 100]]
+    K = [[60, 0], [100, 0], [100, 40], [60, 40]]
+    tpl = graph2plan_plan_to_polygon_template(_g2p_poly_plan([0, 2], [L, K], "Lp"), "Lp")
+    monkeypatch.setattr(layout_templates, "load_templates", lambda: [tpl])
+
+    program = BuildingProgram(
+        project_name="Т", storeys=1, footprint={"width_m": 10, "depth_m": 9},
+        rooms=[
+            Room(id="liv", name="Гостиная", storey=0, area_m2=60, type="IfcSpace:LIVING", min_width_m=3.0),
+            Room(id="kit", name="Кухня", storey=0, area_m2=15, type="IfcSpace:KITCHEN", min_width_m=2.5),
+        ],
+    )
+    fp = generate_floor_plan(program)
+    liv = next(rp.polygon for rp in fp.storeys[0].rooms if rp.id == "liv")
+    assert len(liv) == 6  # реальная Г-форма дошла до плана
+    # масштабирована под footprint
+    assert abs(max(x for x, _ in liv) - 10.0) < 0.2 and abs(max(y for _, y in liv) - 9.0) < 0.2
+
+    path, stats = generate_ifc(fp, output_dir="/tmp")
+    assert stats["spaces"] == 2
+    import ifcopenshell, ifcopenshell.geom
+    ifc = ifcopenshell.open(path)
+    s = ifcopenshell.geom.settings(); s.set("use-world-coords", True)
+    for t in ("IfcWall", "IfcSlab", "IfcSpace", "IfcWindow", "IfcDoor"):
+        for p in ifc.by_type(t):
+            ifcopenshell.geom.create_shape(s, p)
+
+
+def test_graph2plan_polygon_dedup_and_signature():
+    from src.bim_agents.rplan_convert import graph2plan_plan_to_polygon_template, _signature
+    L = [[0, 0], [60, 0], [60, 40], [100, 40], [100, 100], [0, 100]]
+    K = [[60, 0], [100, 0], [100, 40], [60, 40]]
+    t1 = graph2plan_plan_to_polygon_template(_g2p_poly_plan([0, 2], [L, K], "a"), "a")
+    t2 = graph2plan_plan_to_polygon_template(_g2p_poly_plan([0, 2], [L, K], "b"), "b")
+    assert _signature(t1) == _signature(t2)   # одинаковая форма → один ключ дедупа

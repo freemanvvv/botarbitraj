@@ -28,25 +28,43 @@ def _family_program():
     )
 
 
+def _iter_cells(r):
+    """Прямоугольники слота: одиночный (cx0..cy1) или Г-образный ("cells")."""
+    if "cells" in r:
+        return [tuple(c) for c in r["cells"]]
+    return [(r["cx0"], r["cx1"], r["cy0"], r["cy1"])]
+
+
 def test_all_templates_tile_unit_square_without_overlap():
-    """Валидация рукописного датасета: каждая мозаика полностью и без
-    наложений покрывает единичный квадрат."""
+    """Валидация датасета: каждая grid-мозаика полностью и без наложений
+    покрывает единичный квадрат. polygon-шаблоны (реальные формы из RPLAN,
+    _source=graph2plan_poly) — не сеточные, для них проверяются лишь
+    нормировка контуров в 0..1 и невырожденность."""
     for tpl in load_templates():
+        if tpl.get("_source") == "graph2plan_poly" or any("polygon" in r for r in tpl["rooms"]):
+            for r in tpl["rooms"]:
+                poly = r["polygon"]
+                assert len(poly) >= 3, tpl["id"]
+                assert all(0.0 <= x <= 1.0 and 0.0 <= y <= 1.0 for x, y in poly), tpl["id"]
+            continue
         xs, ys = tpl["x_cuts"], tpl["y_cuts"]
         assert xs[0] == 0.0 and xs[-1] == 1.0 and xs == sorted(xs), tpl["id"]
         assert ys[0] == 0.0 and ys[-1] == 1.0 and ys == sorted(ys), tpl["id"]
         cells = []
         total = 0.0
         for r in tpl["rooms"]:
-            x0, x1 = xs[r["cx0"]], xs[r["cx1"]]
-            y0, y1 = ys[r["cy0"]], ys[r["cy1"]]
-            assert x1 > x0 and y1 > y0, (tpl["id"], r["slot"])
-            total += (x1 - x0) * (y1 - y0)
-            cells.append((x0, y0, x1, y1, r["slot"]))
+            for cx0, cx1, cy0, cy1 in _iter_cells(r):
+                x0, x1 = xs[cx0], xs[cx1]
+                y0, y1 = ys[cy0], ys[cy1]
+                assert x1 > x0 and y1 > y0, (tpl["id"], r["slot"])
+                total += (x1 - x0) * (y1 - y0)
+                cells.append((x0, y0, x1, y1, r["slot"]))
         assert abs(total - 1.0) < 1e-9, (tpl["id"], total)
         for i in range(len(cells)):
             for j in range(i + 1, len(cells)):
                 a, b = cells[i], cells[j]
+                if a[4] == b[4]:
+                    continue  # разные прямоугольники одной Г-образной комнаты
                 overlap_w = min(a[2], b[2]) - max(a[0], b[0])
                 overlap_h = min(a[3], b[3]) - max(a[1], b[1])
                 assert overlap_w <= 1e-9 or overlap_h <= 1e-9, (tpl["id"], a[4], b[4])
