@@ -23,12 +23,27 @@ house_templates.json (вручную или конвертером из вект
 CubiCasa5k SVG — формат описан в _comment датасета).
 """
 from __future__ import annotations
+import gzip
 import json
 import math
 import os
 from collections import Counter
 
 _TEMPLATES_PATH = os.path.join(os.path.dirname(__file__), "house_templates.json")
+
+
+def _resolve_templates_path() -> str:
+    """Путь к датасету. Если рядом лежит сжатый .json.gz (большой RPLAN-набор
+    не влезает в git несжатым — лимит GitHub 100 МБ), он в приоритете; иначе
+    обычный .json (рукописный seed на 6 шаблонов для разработки)."""
+    gz = _TEMPLATES_PATH + ".gz"
+    return gz if os.path.exists(gz) else _TEMPLATES_PATH
+
+
+def _read_templates(path: str) -> list[dict]:
+    opener = gzip.open if path.endswith(".gz") else open
+    with opener(path, "rt", encoding="utf-8") as f:
+        return json.load(f)["templates"]
 
 _MIN_STRIP_M = 0.9   # минимальная ширина колонки/ряда сетки после подгонки
 
@@ -39,6 +54,7 @@ _MIN_STRIP_M = 0.9   # минимальная ширина колонки/ряд
 # вызов match_template, т.е. по 3 раза на 3-этажный дом. Кэш инвалидируется
 # по mtime файла (перегенерировал датасет → подхватится автоматически).
 _CACHE: dict = {}
+_CACHE_KEY = "current"  # единственный слот кэша (путь может меняться .json↔.json.gz)
 
 
 def _build_catset_index(templates: list[dict]) -> dict:
@@ -53,18 +69,18 @@ def _build_catset_index(templates: list[dict]) -> dict:
 
 
 def load_templates() -> list[dict]:
-    """Список шаблонов из house_templates.json (кэшируется по mtime файла)."""
+    """Список шаблонов из house_templates.json[.gz] (кэшируется по mtime)."""
+    path = _resolve_templates_path()
     try:
-        mtime = os.path.getmtime(_TEMPLATES_PATH)
+        mtime = os.path.getmtime(path)
     except OSError:
         mtime = None
-    c = _CACHE.get(_TEMPLATES_PATH)
-    if c is not None and c["mtime"] == mtime:
+    c = _CACHE.get(_CACHE_KEY)
+    if c is not None and c["path"] == path and c["mtime"] == mtime:
         return c["templates"]
-    with open(_TEMPLATES_PATH, encoding="utf-8") as f:
-        templates = json.load(f)["templates"]
-    _CACHE[_TEMPLATES_PATH] = {"mtime": mtime, "templates": templates,
-                              "index": _build_catset_index(templates)}
+    templates = _read_templates(path)
+    _CACHE[_CACHE_KEY] = {"path": path, "mtime": mtime, "templates": templates,
+                          "index": _build_catset_index(templates)}
     return templates
 
 
@@ -73,7 +89,7 @@ def _catset_index() -> dict:
     реального файла — из кэша; при monkeypatch load_templates в тестах
     (маленькие списки) строится на лету."""
     templates = load_templates()
-    c = _CACHE.get(_TEMPLATES_PATH)
+    c = _CACHE.get(_CACHE_KEY)
     if c is not None and c["templates"] is templates:
         return c["index"]
     return _build_catset_index(templates)

@@ -326,3 +326,29 @@ def test_load_templates_is_cached_and_invalidates_on_mtime(tmp_path, monkeypatch
     os.utime(str(f), None)
     layout_templates.load_templates()
     assert reads["n"] == 2
+
+
+def test_load_templates_reads_gzip_when_present(tmp_path, monkeypatch):
+    """Большой RPLAN-набор не влезает в git несжатым (лимит 100 МБ), поэтому
+    хранится как house_templates.json.gz. Загрузчик должен читать .gz в
+    приоритете, если он лежит рядом."""
+    import gzip
+    import json
+    from src.bim_agents import layout_templates
+
+    base = tmp_path / "house_templates.json"
+    base.write_text(json.dumps({"templates": [
+        {"id": "seed", "storey_role": "any", "aspect": 1.0,
+         "rooms": [{"slot": "living", "category": "living", "cx0": 0, "cx1": 1, "cy0": 0, "cy1": 1}]}
+    ]}))
+    gz = tmp_path / "house_templates.json.gz"
+    with gzip.open(gz, "wt", encoding="utf-8") as f:
+        json.dump({"templates": [
+            {"id": "poly1", "storey_role": "ground", "aspect": 1.1, "_source": "graph2plan_poly",
+             "rooms": [{"slot": "living", "category": "living", "polygon": [[0, 0], [1, 0], [1, 1]]}]}
+        ]}, f)
+
+    monkeypatch.setattr(layout_templates, "_TEMPLATES_PATH", str(base))
+    layout_templates._CACHE.clear()
+    tpls = layout_templates.load_templates()
+    assert len(tpls) == 1 and tpls[0]["id"] == "poly1"   # прочитан .gz, не plain seed

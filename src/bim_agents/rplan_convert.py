@@ -538,6 +538,23 @@ def _poly_area(poly) -> float:
     return abs(s) / 2.0
 
 
+def _simplify_poly(poly):
+    """Убирает вершины, лежащие на прямой между соседями. Контуры rBoundary в
+    RPLAN трассируются по пиксельной границе и содержат МНОГО избыточных точек
+    на прямых участках (staircase); их удаление без потери формы кратно
+    уменьшает размер шаблона (219 МБ → десятки МБ) и убирает ложные углы."""
+    n = len(poly)
+    if n < 3:
+        return poly
+    out = []
+    for k in range(n):
+        p0, p1, p2 = poly[k - 1], poly[k], poly[(k + 1) % n]
+        cross = (p1[0] - p0[0]) * (p2[1] - p1[1]) - (p1[1] - p0[1]) * (p2[0] - p1[0])
+        if abs(cross) > 1e-9:  # настоящий угол — оставляем
+            out.append(p1)
+    return out or poly
+
+
 def _rot90_poly(poly, W):
     """Один поворот полигона на 90° CCW в кадре ширины W: (x,y)→(y,W−x)."""
     return [(y, W - x) for x, y in poly]
@@ -624,13 +641,18 @@ def graph2plan_plan_to_polygon_template(plan, source_id: str, *, reasons=None) -
     for cat, poly in rooms:
         seen[cat] += 1
         slot = f"{cat}_{seen[cat]}" if cats.count(cat) > 1 else cat
-        norm = [[round((px - x0) / span_x, 4), round((py - y0) / span_y, 4)] for px, py in poly]
+        norm = [[round((px - x0) / span_x, 3), round((py - y0) / span_y, 3)] for px, py in poly]
+        norm = _simplify_poly(norm)          # убрать staircase-точки (кратно меньше размер)
+        if len(norm) < 3:
+            continue
         out_rooms.append({"slot": slot, "category": cat, "polygon": norm})
+    if len(out_rooms) < 2:
+        if reasons is not None:
+            reasons["мало комнат после упрощения"] += 1
+        return None
 
-    comp = ", ".join(f"{_RU_CAT.get(c, c)}×{n}" for c, n in sorted(Counter(cats).items()))
     return {
         "id": f"graph2plan_poly_{source_id}",
-        "description": f"RPLAN {len(rooms)} комн. (реальные формы): {comp}",
         "storey_role": _storey_role(set(cats)),
         "aspect": round(span_x / span_y, 2),
         "rooms": out_rooms,
@@ -640,12 +662,20 @@ def graph2plan_plan_to_polygon_template(plan, source_id: str, *, reasons=None) -
 
 def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
                                 min_iou: float = 0.7, snap_tol_px: int = 4,
-                                polygons: bool = False) -> tuple[list[dict], dict]:
+                                polygons: bool = False,
+                                cap_per_composition: int | None = None,
+                                seen: set | None = None,
+                                comp_counts: Counter | None = None) -> tuple[list[dict], dict]:
     """Graph2Plan .mat (struct-массив `data`) → (уникальные шаблоны, статистика).
 
     polygons=False — mosaic-путь по gtBoxNew (только прямоугольные раскладки,
     ~1% приёма); polygons=True — polygon-путь по rBoundary (реальные формы
-    комнат, включая Г-образные; приём почти полный)."""
+    комнат, включая Г-образные; приём почти полный).
+    cap_per_composition — не больше N шаблонов на один состав комнат
+    (мультимножество категорий): режет избыточность (десятки тысяч почти
+    одинаковых планов → компактная разнообразная библиотека). seen/comp_counts
+    можно передать снаружи, чтобы дедуп/лимит держались СКВОЗЬ несколько
+    файлов (train+valid+test)."""
     import scipy.io  # тяжёлая зависимость — грузим только когда реально нужен .mat
 
     m = scipy.io.loadmat(mat_path, squeeze_me=True, struct_as_record=False)
@@ -655,9 +685,13 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
     if limit:
         data = data[:limit]
 
-    templates, seen = [], set()
+    templates = []
+    if seen is None:
+        seen = set()
+    if comp_counts is None:
+        comp_counts = Counter()
     reasons: Counter = Counter()
-    stats = {"total": 0, "accepted": 0, "rejected": 0, "duplicate": 0, "error": 0}
+    stats = {"total": 0, "accepted": 0, "rejected": 0, "duplicate": 0, "capped": 0, "error": 0}
     for i, plan in enumerate(data):
         stats["total"] += 1
         try:
@@ -677,6 +711,12 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
         if sig in seen:
             stats["duplicate"] += 1
             continue
+        if cap_per_composition is not None:
+            comp = tuple(sorted(r["category"] for r in tpl["rooms"]))
+            if comp_counts[comp] >= cap_per_composition:
+                stats["capped"] += 1
+                continue
+            comp_counts[comp] += 1
         seen.add(sig)
         templates.append(tpl)
         stats["accepted"] += 1
@@ -761,18 +801,31 @@ def convert_dir(
     return templates, stats
 
 
+def _open_dataset(path: str, mode: str):
+    """Открывает датасет-JSON, прозрачно (де)компрессируя .json.gz — большой
+    RPLAN-набор не влезает в git несжатым (лимит GitHub 100 МБ)."""
+    import gzip
+    if path.endswith(".gz"):
+        return gzip.open(path, mode + "t", encoding="utf-8")
+    return open(path, mode, encoding="utf-8")
+
+
 def _main(argv=None):
     import argparse
 
-    ap = argparse.ArgumentParser(description="Конвертер RPLAN/Graph2Plan → house_templates.json")
-    ap.add_argument("input", help="каталог с RPLAN *.png (PNG-режим) ИЛИ путь к Graph2Plan .mat (--graph2plan)")
+    ap = argparse.ArgumentParser(description="Конвертер RPLAN/Graph2Plan → house_templates.json[.gz]")
+    ap.add_argument("input", nargs="+",
+                    help="каталог RPLAN *.png (PNG-режим) ИЛИ один/несколько Graph2Plan .mat (--graph2plan)")
     ap.add_argument("--graph2plan", action="store_true",
                     help="input — это Graph2Plan .mat (struct-массив data), а не каталог PNG")
     ap.add_argument("--polygons", action="store_true",
                     help="Graph2Plan: брать РЕАЛЬНЫЕ формы комнат (rBoundary), а не bbox'ы — "
                          "включая Г-образные; приём почти полный (bbox-режим брал лишь ~1 проц.)")
-    ap.add_argument("--out", help="куда записать новый датасет (обязателен, если нет --append)")
-    ap.add_argument("--append", help="существующий house_templates.json — дописать В НЕГО ЖЕ (in place, с дедупом)")
+    ap.add_argument("--out", help="куда записать новый датасет (обязателен, если нет --append); "
+                                  ".json.gz — писать сжатым")
+    ap.add_argument("--append", help="существующий датасет .json[.gz] — дописать В НЕГО ЖЕ (in place, с дедупом)")
+    ap.add_argument("--cap-per-composition", type=int, default=None,
+                    help="не больше N шаблонов на один состав комнат — режет избыточность")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--category-channel", type=int, default=1)
     ap.add_argument("--instance-channel", type=int, default=2)
@@ -780,51 +833,59 @@ def _main(argv=None):
     ap.add_argument("--min-iou", type=float, default=0.7)
     args = ap.parse_args(argv)
 
-    if args.graph2plan:
-        templates, stats = graph2plan_mat_to_templates(
-            args.input, limit=args.limit, snap_tol_px=args.snap, min_iou=args.min_iou,
-            polygons=args.polygons)
-    else:
-        templates, stats = convert_dir(
-            args.input, limit=args.limit,
-            category_channel=args.category_channel, instance_channel=args.instance_channel,
-            snap_tol_px=args.snap, min_iou=args.min_iou)
-
     if not args.append and not args.out:
         ap.error("нужен --out (или --append для дописывания в существующий датасет)")
 
+    # База: то, что уже есть в целевом датасете (для сквозного дедупа/лимита)
+    base = {"templates": []}
     if args.append:
-        # Дописываем В ТОТ ЖЕ файл (in place), а не в --out — иначе датасет,
-        # который читает движок, не меняется (это и была причина «ИТОГО: 6»).
-        with open(args.append, encoding="utf-8") as f:
+        with _open_dataset(args.append, "r") as f:
             base = json.load(f)
-        existing_sigs = {_signature(t) for t in base["templates"]}
-        added = [t for t in templates if _signature(t) not in existing_sigs]
-        base["templates"].extend(added)
-        out_path, payload = args.append, base
-        print(f"дописано {len(added)} новых (из {len(templates)} уникальных); всего в датасете {len(base['templates'])}")
-    else:
-        out_path = args.out
-        payload = {
-            "_comment": "Сгенерировано из RPLAN/Graph2Plan через src/bim_agents/rplan_convert.py",
-            "templates": templates,
-        }
+    seen = {_signature(t) for t in base["templates"]}
+    comp_counts: Counter = Counter()
+    if args.cap_per_composition is not None:
+        for t in base["templates"]:
+            comp_counts[tuple(sorted(r["category"] for r in t["rooms"]))] += 1
 
-    with open(out_path, "w", encoding="utf-8") as f:
-        json.dump(payload, f, ensure_ascii=False, indent=2)
+    all_new = []
+    agg = Counter()
+    reasons: Counter = Counter()
+    for inp in args.input:
+        if args.graph2plan:
+            tpls, stats = graph2plan_mat_to_templates(
+                inp, limit=args.limit, snap_tol_px=args.snap, min_iou=args.min_iou,
+                polygons=args.polygons, cap_per_composition=args.cap_per_composition,
+                seen=seen, comp_counts=comp_counts)
+        else:
+            tpls, stats = convert_dir(
+                inp, limit=args.limit,
+                category_channel=args.category_channel, instance_channel=args.instance_channel,
+                snap_tol_px=args.snap, min_iou=args.min_iou)
+            seen.update(_signature(t) for t in tpls)  # PNG-путь дедупит сам внутри файла
+        all_new.extend(tpls)
+        for k in ("total", "accepted", "rejected", "duplicate", "capped", "error"):
+            agg[k] += stats.get(k, 0)
+        for k, v in stats.get("reasons", {}).items():
+            reasons[k] += v
+        print(f"[{os.path.basename(inp)}] всего {stats['total']}  принято {stats['accepted']}  "
+              f"отклонено {stats['rejected']}  дублей {stats['duplicate']}  "
+              f"по лимиту {stats.get('capped', 0)}  ошибок {stats['error']}")
 
-    # Побочно можно продублировать в --out (напр. для инспекции), если он задан вместе с --append
-    if args.append and args.out and args.out != args.append:
-        with open(args.out, "w", encoding="utf-8") as f:
-            json.dump({"templates": templates}, f, ensure_ascii=False, indent=2)
+    base["templates"].extend(all_new)
+    out_path = args.append or args.out
+    payload = base if args.append else {
+        "_comment": "Сгенерировано из RPLAN/Graph2Plan через src/bim_agents/rplan_convert.py",
+        "templates": all_new,
+    }
+    with _open_dataset(out_path, "w") as f:
+        json.dump(payload, f, ensure_ascii=False)  # без indent — компактнее в разы
 
-    print(f"файлов: {stats['total']}  принято: {stats['accepted']}  "
-          f"отклонено: {stats['rejected']}  дублей: {stats['duplicate']}  ошибок: {stats['error']}")
-    if stats.get("reasons"):
-        print("причины отказа:")
-        for reason, n in sorted(stats["reasons"].items(), key=lambda kv: -kv[1]):
-            print(f"  {n:>6}  {reason}")
-    print(f"записано в {out_path}")
+    print(f"— ИТОГО: добавлено {len(all_new)}, в датасете {len(base['templates'])} шаблонов")
+    print(f"  принято {agg['accepted']}  отклонено {agg['rejected']}  дублей {agg['duplicate']}  "
+          f"по лимиту {agg['capped']}  ошибок {agg['error']}")
+    if reasons:
+        print("  причины отказа:", dict(reasons))
+    print(f"  записано в {out_path}")
 
 
 if __name__ == "__main__":
