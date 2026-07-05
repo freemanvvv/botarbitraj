@@ -621,8 +621,14 @@ def _orient_polygons_entry_to_top(rooms, door):
     return [(rooms[i][0], best[i]) for i in range(len(rooms))]
 
 
-def graph2plan_plan_to_polygon_template(plan, source_id: str, *, reasons=None) -> dict | None:
-    """Один план Graph2Plan → polygon-шаблон (реальные формы комнат) или None."""
+def graph2plan_plan_to_polygon_template(plan, source_id: str, *, reasons=None,
+                                        simplify: bool = True) -> dict | None:
+    """Один план Graph2Plan → polygon-шаблон (реальные формы комнат) или None.
+
+    simplify=True (по умолчанию) убирает точки на прямых участках контура —
+    для rectilinear-форм RPLAN это БЕЗ потери формы (площадь та же, углы те
+    же), но кратно меньше вершин/размер. simplify=False оставляет сырую
+    попиксельную обводку (те же формы, но десятки лишних точек)."""
     rooms, door = _graph2plan_plan_to_polygons(plan)
     if len(rooms) < 2:
         if reasons is not None:
@@ -642,7 +648,8 @@ def graph2plan_plan_to_polygon_template(plan, source_id: str, *, reasons=None) -
         seen[cat] += 1
         slot = f"{cat}_{seen[cat]}" if cats.count(cat) > 1 else cat
         norm = [[round((px - x0) / span_x, 3), round((py - y0) / span_y, 3)] for px, py in poly]
-        norm = _simplify_poly(norm)          # убрать staircase-точки (кратно меньше размер)
+        if simplify:
+            norm = _simplify_poly(norm)      # убрать точки на прямых (без потери формы)
         if len(norm) < 3:
             continue
         out_rooms.append({"slot": slot, "category": cat, "polygon": norm})
@@ -664,6 +671,7 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
                                 min_iou: float = 0.7, snap_tol_px: int = 4,
                                 polygons: bool = False,
                                 cap_per_composition: int | None = None,
+                                simplify: bool = True,
                                 seen: set | None = None,
                                 comp_counts: Counter | None = None) -> tuple[list[dict], dict]:
     """Graph2Plan .mat (struct-массив `data`) → (уникальные шаблоны, статистика).
@@ -697,7 +705,7 @@ def graph2plan_mat_to_templates(mat_path: str, *, limit: int | None = None,
         try:
             name = str(getattr(plan, "name", "")) or str(i)
             if polygons:
-                tpl = graph2plan_plan_to_polygon_template(plan, name, reasons=reasons)
+                tpl = graph2plan_plan_to_polygon_template(plan, name, reasons=reasons, simplify=simplify)
             else:
                 tpl = graph2plan_plan_to_template(plan, name, min_iou=min_iou,
                                                   snap_tol_px=snap_tol_px, reasons=reasons)
@@ -826,6 +834,9 @@ def _main(argv=None):
     ap.add_argument("--append", help="существующий датасет .json[.gz] — дописать В НЕГО ЖЕ (in place, с дедупом)")
     ap.add_argument("--cap-per-composition", type=int, default=None,
                     help="не больше N шаблонов на один состав комнат — режет избыточность")
+    ap.add_argument("--no-simplify", action="store_true",
+                    help="НЕ убирать точки на прямых участках контура (сырая попиксельная "
+                         "обводка rBoundary). Форма та же, но файл в разы больше")
     ap.add_argument("--limit", type=int, default=None)
     ap.add_argument("--category-channel", type=int, default=1)
     ap.add_argument("--instance-channel", type=int, default=2)
@@ -855,7 +866,7 @@ def _main(argv=None):
             tpls, stats = graph2plan_mat_to_templates(
                 inp, limit=args.limit, snap_tol_px=args.snap, min_iou=args.min_iou,
                 polygons=args.polygons, cap_per_composition=args.cap_per_composition,
-                seen=seen, comp_counts=comp_counts)
+                simplify=not args.no_simplify, seen=seen, comp_counts=comp_counts)
         else:
             tpls, stats = convert_dir(
                 inp, limit=args.limit,
