@@ -32,6 +32,8 @@ interface PlanResponse {
   norms_citations: string;
   raw_program: any;
   raw_floorplan: any;
+  variant?: number;
+  variant_count?: number;
 }
 
 interface BuildStats {
@@ -118,14 +120,17 @@ export default function Modeling() {
     setRightView("album"); setBuild3dError("");
   };
 
-  const generatePlan = async (description: string) => {
+  const generatePlan = async (description: string, opts: { variant?: number; program?: any } = {}) => {
     if (!description.trim() || !buildingKind) return;
     setPlanLoading(true);
     try {
       const res = await fetch(`${API}/api/house/plan`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ building_kind: buildingKind, description, model, check_norms: checkNorms }),
+        body: JSON.stringify({
+          building_kind: buildingKind, description, model, check_norms: checkNorms,
+          variant: opts.variant ?? 0, program: opts.program ?? null,
+        }),
       });
       const d = await res.json();
       if (!res.ok) throw new Error(d.detail || "Ошибка генерации плана");
@@ -135,9 +140,11 @@ export default function Modeling() {
       setStats(null); setSelectedFile(null); setRightView("album");
       setLastDescription(description);
       const errCount = d.norms_issues.filter((i: NormsIssue) => i.severity === "error").length;
+      const vc = d.variant_count ?? 1;
+      const variantNote = vc > 1 ? ` Форм из датасета под этот состав: ${vc} (вариант ${(d.variant ?? 0) + 1}/${vc}).` : "";
       const summary = errCount > 0
-        ? `Готово: «${d.summary}», ${d.floors.length} этаж(а/ей). Найдено нарушений норм: ${errCount} — можно перегенерировать или сохранить как есть.`
-        : `Готово: «${d.summary}», ${d.floors.length} этаж(а/ей). Нарушений норм не найдено.`;
+        ? `Готово: «${d.summary}», ${d.floors.length} этаж(а/ей). Найдено нарушений норм: ${errCount} — можно перегенерировать или сохранить как есть.${variantNote}`
+        : `Готово: «${d.summary}», ${d.floors.length} этаж(а/ей). Нарушений норм не найдено.${variantNote}`;
       setMessages(prev => [...prev, { role: "bot", content: summary }]);
     } catch (e: any) {
       setMessages(prev => [...prev, { role: "bot", content: `❌ ${e.message}` }]);
@@ -154,10 +161,22 @@ export default function Modeling() {
     generatePlan(text);
   };
 
+  // Перегенерировать — новый состав от LLM (другая температура) с нуля.
   const regenerate = () => {
     if (!lastDescription || planLoading) return;
     setMessages(prev => [...prev, { role: "user", content: "🔄 Перегенерировать" }]);
     generatePlan(lastDescription);
+  };
+
+  // Другой вариант — та же комплектация, следующая РЕАЛЬНАЯ форма из датасета
+  // (без обращения к LLM: переиспользуем уже полученный BuildingProgram).
+  const showVariant = () => {
+    if (!plan || planLoading) return;
+    const vc = plan.variant_count ?? 1;
+    if (vc <= 1) return;
+    const next = ((plan.variant ?? 0) + 1) % vc;
+    setMessages(prev => [...prev, { role: "user", content: `🔀 Другой вариант (${next + 1}/${vc})` }]);
+    generatePlan(lastDescription, { variant: next, program: plan.raw_program });
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -359,6 +378,11 @@ export default function Modeling() {
               <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 10 }}>
                 <div style={{ fontWeight: 600, fontSize: "0.92rem" }}>{floor.label}</div>
                 <div style={{ fontSize: "0.78rem", color: "var(--text2)" }}>{floor.area_m2} м²</div>
+                {(plan.variant_count ?? 1) > 1 && (
+                  <span style={{ fontSize: "0.75rem", color: "var(--accent)", padding: "2px 8px", background: "rgba(10,132,255,0.12)", borderRadius: 6 }}>
+                    🔀 форма {(plan.variant ?? 0) + 1} из {plan.variant_count}
+                  </span>
+                )}
                 {savedPlanId && <span style={{ marginLeft: "auto", fontSize: "0.75rem", color: "#30d158" }}>✅ Сохранено (#{savedPlanId})</span>}
               </div>
 
@@ -406,7 +430,12 @@ export default function Modeling() {
                 </details>
               )}
 
-              <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
+              <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
+                {(plan.variant_count ?? 1) > 1 && (
+                  <button className="btn-gen" onClick={showVariant} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
+                    🔀 Другой вариант формы
+                  </button>
+                )}
                 <button className="btn-gen" onClick={regenerate} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
                   🔄 Перегенерировать
                 </button>

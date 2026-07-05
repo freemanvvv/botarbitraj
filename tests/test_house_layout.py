@@ -352,3 +352,51 @@ def test_load_templates_reads_gzip_when_present(tmp_path, monkeypatch):
     layout_templates._CACHE.clear()
     tpls = layout_templates.load_templates()
     assert len(tpls) == 1 and tpls[0]["id"] == "poly1"   # прочитан .gz, не plain seed
+
+
+def test_match_templates_returns_ranked_list_and_variant_cycles(monkeypatch):
+    """match_templates отдаёт до N подходящих форм; match_template(variant=k)
+    циклит по ним — основа «показать другой вариант»."""
+    from src.bim_agents import layout_templates
+    from src.bim_agents.layout_templates import match_templates, match_template
+
+    def poly_tpl(tid, aspect):
+        return {"id": tid, "storey_role": "any", "aspect": aspect, "_source": "graph2plan_poly",
+                "rooms": [{"slot": "living", "category": "living", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]},
+                          {"slot": "kitchen", "category": "kitchen", "polygon": [[0, 0], [1, 0], [1, 1], [0, 1]]}]}
+    fake = [poly_tpl("a", 1.0), poly_tpl("b", 1.1), poly_tpl("c", 1.2)]
+    monkeypatch.setattr(layout_templates, "load_templates", lambda: fake)
+
+    cands = match_templates(["living", "kitchen"], 1.05, 0)
+    assert len(cands) == 3
+    ids = [t["id"] for t in cands]
+    # variant циклит по кандидатам
+    assert match_template(["living", "kitchen"], 1.05, 0, variant=0)["id"] == ids[0]
+    assert match_template(["living", "kitchen"], 1.05, 0, variant=1)["id"] == ids[1]
+    assert match_template(["living", "kitchen"], 1.05, 0, variant=3)["id"] == ids[0]  # цикл
+
+
+def test_count_template_variants_and_variant_changes_geometry(monkeypatch):
+    """count_template_variants считает число форм под состав; разные variant
+    дают разную геометрию (другую реальную планировку)."""
+    from src.bim_agents import layout_templates
+    from src.bim_agents.floorplan_agent import generate_floor_plan, count_template_variants
+
+    # две РАЗНЫЕ формы одного состава (living+kitchen)
+    t1 = {"id": "t1", "storey_role": "any", "aspect": 1.0, "_source": "graph2plan_poly",
+          "rooms": [{"slot": "living", "category": "living", "polygon": [[0, 0], [0.5, 0], [0.5, 1], [0, 1]]},
+                    {"slot": "kitchen", "category": "kitchen", "polygon": [[0.5, 0], [1, 0], [1, 1], [0.5, 1]]}]}
+    t2 = {"id": "t2", "storey_role": "any", "aspect": 1.0, "_source": "graph2plan_poly",
+          "rooms": [{"slot": "living", "category": "living", "polygon": [[0, 0], [1, 0], [1, 0.5], [0, 0.5]]},
+                    {"slot": "kitchen", "category": "kitchen", "polygon": [[0, 0.5], [1, 0.5], [1, 1], [0, 1]]}]}
+    monkeypatch.setattr(layout_templates, "load_templates", lambda: [t1, t2])
+
+    program = BuildingProgram(
+        project_name="Т", storeys=1, footprint={"width_m": 10, "depth_m": 10},
+        rooms=[Room(id="liv", name="Зал", storey=0, area_m2=50, type="IfcSpace:LIVING", min_width_m=3.0),
+               Room(id="kit", name="Кухня", storey=0, area_m2=50, type="IfcSpace:KITCHEN", min_width_m=2.5)])
+    assert count_template_variants(program) == 2
+
+    p0 = {rp.id: rp.polygon for rp in generate_floor_plan(program, variant=0).storeys[0].rooms}
+    p1 = {rp.id: rp.polygon for rp in generate_floor_plan(program, variant=1).storeys[0].rooms}
+    assert p0["liv"] != p1["liv"]   # variant реально меняет форму

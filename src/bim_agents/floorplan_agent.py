@@ -336,8 +336,30 @@ def _place_openings(walls: list[WallPlan], owners: dict, polygons: dict,
 
 # ─────────────────────────────── основной вход ──────────────────────────────
 
-def generate_floor_plan(program: BuildingProgram) -> FloorPlan:
-    """Основная функция: BuildingProgram → FloorPlan."""
+def count_template_variants(program: BuildingProgram, limit: int = 10) -> int:
+    """Сколько разных реальных форм подходит под состав комнат (для показа
+    «Вариант k из N» и перелистывания). Берём максимум по этажам — столько
+    раз «перегенерировать» даст новую форму, прежде чем варианты повторятся."""
+    from .layout_templates import match_templates
+    fw = program.footprint["width_m"]
+    fd = program.footprint["depth_m"]
+    best = 1
+    for level in range(program.storeys):
+        level_rooms = [r for r in program.rooms if r.storey == level]
+        if not level_rooms:
+            continue
+        cats = [classify_room(r.type, r.name) for r in level_rooms]
+        n = len(match_templates(cats, fw / fd if fd else 1.0, level, limit=limit))
+        best = max(best, n)
+    return min(best, limit)
+
+
+def generate_floor_plan(program: BuildingProgram, variant: int = 0) -> FloorPlan:
+    """Основная функция: BuildingProgram → FloorPlan.
+
+    variant — какую из подходящих форм взять на каждом этаже (0 = лучшая);
+    «перегенерировать» увеличивает variant → другая реальная планировка того
+    же состава (см. layout_templates.match_template)."""
     fw = program.footprint["width_m"]
     fd = program.footprint["depth_m"]
     storeys_data = []
@@ -352,7 +374,7 @@ def generate_floor_plan(program: BuildingProgram) -> FloorPlan:
         metas = [(r, classify_room(r.type, r.name)) for r in level_rooms]
 
         polygons = cats = None
-        tpl = match_template([c for _, c in metas], fw / fd if fd else 1.0, level)
+        tpl = match_template([c for _, c in metas], fw / fd if fd else 1.0, level, variant=variant)
         if tpl is not None:
             try:
                 polygons, cats = apply_template(tpl, metas, fw, fd)

@@ -840,6 +840,12 @@ class HousePlanRequest(BaseModel):
     # описанием ("перегенерировать" во фронте) дал другой результат —
     # отдельного флага regenerate не нужно, это просто новый LLM-вызов.
     temperature: float = Field(0.5, ge=0.0, le=1.5)
+    # variant — какую из подходящих форм датасета показать (0 = лучшая).
+    # Вместе с program (готовый BuildingProgram из прошлого ответа) даёт
+    # «показать другой вариант» БЕЗ повторного вызова LLM: тот же состав,
+    # следующая реальная планировка из датасета.
+    variant: int = Field(0, ge=0, le=1000)
+    program: dict | None = None
 
 
 class HousePlanSaveRequest(BaseModel):
@@ -859,7 +865,7 @@ def _bbox_area(polygon: list) -> float:
 
 
 def _generate_house_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float,
-                          max_repair_attempts: int = 1) -> tuple:
+                          max_repair_attempts: int = 1, variant: int = 0, reuse_program: dict | None = None) -> tuple:
     """building_kind="house": текст → BuildingProgram (LLM) → FloorPlan
     (treemap-солвер, src/bim_agents/) → SVG по этажам + проверка норм.
 
@@ -878,6 +884,31 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
     from src.bim_agents.contracts import BuildingProgram
     from src.floor_plan_render import render_storey_svg
     from src.house_norms import validate_house_plan
+
+    from src.bim_agents.floorplan_agent import count_template_variants
+
+    def _render(program, floor_plan):
+        floors = []
+        for storey in floor_plan.storeys:
+            area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
+            floors.append({
+                "level": storey.level,
+                "label": f"Этаж {storey.level}",
+                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "area_m2": round(area, 1),
+            })
+        return floors
+
+    # Быстрый путь «показать другой вариант»: состав уже есть (reuse_program),
+    # LLM не дёргаем — просто берём следующую форму из датасета (variant).
+    if reuse_program is not None:
+        program = BuildingProgram(**reuse_program["building_program"])
+        floor_plan = generate_floor_plan(program, variant=variant)
+        floors = _render(program, floor_plan)
+        norms_issues = validate_house_plan(program, floor_plan) if check_norms else []
+        raw_program = {"building_program": program.model_dump()}
+        return (floors, norms_issues, raw_program, floor_plan.model_dump(),
+                program.project_name, count_template_variants(program))
 
     system_prompt = ARCHITECT_PROMPT
     if norms_block:
@@ -916,17 +947,8 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
         if program.storeys > 30:
             raise ValueError(f"Слишком много этажей в ответе модели ({program.storeys} > 30)")
 
-        floor_plan = generate_floor_plan(program)
-
-        floors = []
-        for storey in floor_plan.storeys:
-            area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
-            floors.append({
-                "level": storey.level,
-                "label": f"Этаж {storey.level}",
-                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
-                "area_m2": round(area, 1),
-            })
+        floor_plan = generate_floor_plan(program, variant=variant)
+        floors = _render(program, floor_plan)
 
         norms_issues = validate_house_plan(program, floor_plan) if check_norms else []
         errors = [i for i in norms_issues if i["severity"] == "error"]
@@ -934,7 +956,8 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
         raw_floorplan = floor_plan.model_dump()
 
         if best is None or len(errors) < best[0]:
-            best = (len(errors), floors, norms_issues, raw_program, raw_floorplan, program.project_name)
+            best = (len(errors), floors, norms_issues, raw_program, raw_floorplan,
+                    program.project_name, count_template_variants(program))
 
         if not errors or attempt >= max_repair_attempts:
             break
@@ -946,7 +969,7 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
             f"и верни BuildingProgram заново тем же форматом JSON: {fixes}"
         )})
 
-    return best[1], best[2], best[3], best[4], best[5]
+    return best[1], best[2], best[3], best[4], best[5], best[6]
 
 
 def _generate_apartment_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float) -> tuple:
@@ -1007,10 +1030,16 @@ def house_plan_generate(req: HousePlanRequest):
         )
 
     try:
-        gen = _generate_house_plan if req.building_kind == "house" else _generate_apartment_plan
-        floors, norms_issues, raw_program, raw_floorplan, summary = gen(
-            req.description, req.model, norms_block, req.check_norms, req.temperature,
-        )
+        if req.building_kind == "house":
+            floors, norms_issues, raw_program, raw_floorplan, summary, variant_count = _generate_house_plan(
+                req.description, req.model, norms_block, req.check_norms, req.temperature,
+                variant=req.variant, reuse_program=req.program,
+            )
+        else:
+            floors, norms_issues, raw_program, raw_floorplan, summary = _generate_apartment_plan(
+                req.description, req.model, norms_block, req.check_norms, req.temperature,
+            )
+            variant_count = 1
     except Exception as e:
         raise _server_error(e, "Ошибка генерации плана")
 
@@ -1022,6 +1051,10 @@ def house_plan_generate(req: HousePlanRequest):
         "norms_citations": norms_block,
         "raw_program": raw_program,
         "raw_floorplan": raw_floorplan,
+        # число разных реальных форм датасета под этот состав (для «Вариант k/N»)
+        # и текущий выбранный вариант.
+        "variant": req.variant % variant_count if variant_count else 0,
+        "variant_count": variant_count,
     }
 
 

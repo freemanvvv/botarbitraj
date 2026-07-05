@@ -95,8 +95,45 @@ def _catset_index() -> dict:
     return _build_catset_index(templates)
 
 
-def match_template(room_cats: list[str], aspect: float, level: int) -> dict | None:
-    """Шаг 1-2: подбор ближайшего по составу шаблона.
+def match_templates(room_cats: list[str], aspect: float, level: int, limit: int = 10) -> list[dict]:
+    """Все подходящие шаблоны, отсортированные «лучший первым» (до limit).
+
+    Тот же критерий отбора, что и match_template, но возвращается СПИСОК —
+    для показа пользователю нескольких реальных форм под один состав и
+    перелистывания вариантов («перегенерировать» → следующая форма).
+    Правило отбора: см. match_template."""
+    want = Counter(room_cats)
+    want_set = frozenset(want)
+    scored = []
+    for tpl in _catset_index().get(want_set, ()):
+        role = tpl.get("storey_role", "any")
+        if role == "ground" and level != 0:
+            continue
+        if role == "upper" and level == 0:
+            continue
+        tc = Counter(r["category"] for r in tpl["rooms"])
+        is_poly = _is_polygon_template(tpl)
+        if is_poly:
+            if tc != want:
+                continue
+        else:
+            if set(tc) != set(want_set):
+                continue
+            if any(tc[c] > want[c] for c in tc):
+                continue
+        coverage = sum(tc.values())
+        aspect_score = abs(math.log(max(aspect, 1e-3) / max(tpl.get("aspect", 1.0), 1e-3)))
+        scored.append(((-coverage, 0 if is_poly else 1, aspect_score), tpl))
+    scored.sort(key=lambda s: s[0])
+    return [t for _k, t in scored[:limit]]
+
+
+def match_template(room_cats: list[str], aspect: float, level: int, variant: int = 0) -> dict | None:
+    """Шаг 1-2: подбор шаблона по составу.
+
+    variant — какой из подходящих взять (0 = лучший). Циклится по модулю
+    числа кандидатов: «перегенерировать» = variant+1 → следующая реальная
+    форма того же состава, а не тот же результат.
 
     Раньше требовалось ТОЧНОЕ совпадение мультимножества категорий — при
     маленьком датасете (и даже при большом) это почти всегда мимо: «3
@@ -114,38 +151,10 @@ def match_template(room_cats: list[str], aspect: float, level: int) -> dict | No
     деления) и с ближайшим aspect. Точное совпадение — частный случай (tpl==
     want), оно по-прежнему выигрывает. Если ничего не подошло — None (уходит
     в зонированный fallback)."""
-    want = Counter(room_cats)
-    want_set = frozenset(want)
-    best, best_key = None, None
-    # И polygon- (tc==want), и grid-шаблоны (set(tc)==want_set) требуют ТОГО
-    # ЖЕ набора категорий, что и запрос → берём только их из индекса, а не
-    # линейно сканируем весь датасет (десятки тысяч шаблонов).
-    for tpl in _catset_index().get(want_set, ()):
-        role = tpl.get("storey_role", "any")
-        if role == "ground" and level != 0:
-            continue
-        if role == "upper" and level == 0:
-            continue
-        tc = Counter(r["category"] for r in tpl["rooms"])
-        is_poly = _is_polygon_template(tpl)
-        if is_poly:
-            # polygon-шаблон хранит РЕАЛЬНЫЕ формы; лишние комнаты в него не
-            # доложить (произвольный полигон не делим) — нужен точный состав.
-            if tc != want:
-                continue
-        else:
-            if set(tc) != want_set:
-                continue
-            if any(tc[c] > want[c] for c in tc):
-                continue
-        coverage = sum(tc.values())  # сколько комнат запроса шаблон закрепляет напрямую
-        aspect_score = abs(math.log(max(aspect, 1e-3) / max(tpl.get("aspect", 1.0), 1e-3)))
-        # При равном покрытии polygon-шаблон (реальная форма) предпочтительнее
-        # прямоугольного grid-шаблона — 0 бьёт 1 в сортировке ключа.
-        key = (-coverage, 0 if is_poly else 1, aspect_score)
-        if best_key is None or key < best_key:
-            best, best_key = tpl, key
-    return best
+    cands = match_templates(room_cats, aspect, level)
+    if not cands:
+        return None
+    return cands[variant % len(cands)]
 
 
 def _is_polygon_template(tpl: dict) -> bool:
