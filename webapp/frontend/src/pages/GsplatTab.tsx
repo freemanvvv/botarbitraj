@@ -56,7 +56,7 @@ export default function GsplatTab() {
   // Upload state
   const [file, setFile] = useState<File | null>(null);
   const [projectName, setProjectName] = useState("");
-  const [fps, setFps] = useState(1.0);
+  const [fps, setFps] = useState(4.0);
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const dragRef = useRef<HTMLDivElement>(null);
@@ -296,10 +296,14 @@ export default function GsplatTab() {
                       (≈{Math.round(fps * 60)} кадров/мин)
                     </span>
                   </label>
-                  <input type="range" min={0.2} max={5} step={0.1}
+                  <input type="range" min={0.5} max={10} step={0.5}
                     value={fps} onChange={e => setFps(Number(e.target.value))}
-                    style={{ width: "100%", marginBottom: 12, accentColor: "var(--accent)" }}
+                    style={{ width: "100%", marginBottom: 4, accentColor: "var(--accent)" }}
                   />
+                  <div style={{ fontSize: "0.7rem", color: "var(--text3)", marginBottom: 12 }}>
+                    Для облёта дрона нужна плотность кадров — цель ≈150–300 кадров.
+                    Подбери FPS под длину ролика (короткий облёт → выше FPS).
+                  </div>
                   {uploadError && (
                     <div style={{ color: "var(--danger)", fontSize: "0.8rem", marginBottom: 8 }}>
                       {uploadError}

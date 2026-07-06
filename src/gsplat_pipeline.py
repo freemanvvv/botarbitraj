@@ -422,14 +422,24 @@ FPS извлечения: {fps}
         _run(job, fe_cmd)
         job["progress"] = 35
 
-        # Матчинг: sequential лучше для видео
-        job["logs"].append("[COLMAP] sequential_matcher...")
-        _run(job, [
-            "colmap", "sequential_matcher",
-            "--database_path", db,
-            "--SequentialMatching.overlap", "15",
-            "--SequentialMatching.quadratic_overlap", "1",
-        ])
+        # Матчинг. Для облёта/орбиты (дрон вокруг объекта) и вообще при
+        # небольшом числе кадров надёжнее EXHAUSTIVE (все пары): sequential
+        # матчит только соседние по времени кадры и не связывает противоположные
+        # стороны круга и не замыкает петлю облёта — из-за этого mapper не
+        # находит хорошую стартовую пару и регистрирует единицы кадров. При
+        # <=250 кадрах exhaustive (O(n²)) дёшев; для длинных проездов оставляем
+        # sequential.
+        if frame_count <= 250:
+            job["logs"].append(f"[{_ts()}] [COLMAP] exhaustive_matcher (облёт/мало кадров, {frame_count})...")
+            _run(job, ["colmap", "exhaustive_matcher", "--database_path", db])
+        else:
+            job["logs"].append(f"[{_ts()}] [COLMAP] sequential_matcher ({frame_count} кадров)...")
+            _run(job, [
+                "colmap", "sequential_matcher",
+                "--database_path", db,
+                "--SequentialMatching.overlap", "15",
+                "--SequentialMatching.quadratic_overlap", "1",
+            ])
         job["progress"] = 50
 
         # Разреженная реконструкция
@@ -475,9 +485,13 @@ FPS извлечения: {fps}
 
         if registered < 5:
             raise RuntimeError(
-                f"COLMAP зарегистрировал только {registered} кадров ({pct}%). "
-                "Видео может быть слишком размытым, быстрым или сцена однородная (асфальт без ориентиров). "
-                "Попробуйте снизить FPS и убедитесь, что в кадре есть статичные объекты."
+                f"COLMAP зарегистрировал только {registered} из {frame_count} кадров ({pct}%). "
+                f"Частая причина при облёте — кадров МАЛО ({frame_count}) или между ними "
+                "слишком большой поворот. Что помогает: 1) поднять FPS извлечения, чтобы "
+                "было хотя бы 150–300 кадров (плавное перекрытие соседних кадров ~70%); "
+                "2) снимать плавно, без смазов; 3) чтобы в кадре были детали/объекты, "
+                "а не только небо/вода/однотонная поверхность. Матчинг уже exhaustive "
+                "(все пары), так что дело именно в плотности/качестве кадров."
             )
 
         # LLM: анализ COLMAP
