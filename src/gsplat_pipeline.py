@@ -13,6 +13,7 @@ from __future__ import annotations
 import os
 import subprocess
 import threading
+import time
 import uuid
 from datetime import datetime
 from pathlib import Path
@@ -50,30 +51,113 @@ def _llm(prompt: str, model_id: str, max_tokens: int = 400) -> str:
 
 # ─── Shell command helper ─────────────────────────────────────
 
-def _run(job: dict, cmd: list, cwd: str = None, timeout: int = 7200) -> tuple[int, str]:
-    """Запускает команду, стримит вывод в job["logs"]."""
-    job["logs"].append(f"$ {' '.join(str(c) for c in cmd)}")
+def _ts() -> str:
+    return datetime.now().strftime("%H:%M:%S")
+
+
+def _run(job: dict, cmd: list, cwd: str = None, timeout: int = 7200,
+         stall_warn: int = 20) -> tuple[int, str]:
+    """Запускает команду, стримит вывод в job["logs"] в реальном времени.
+
+    Отличия от наивного варианта — специально, чтобы ЛОВИТЬ зависания (жалоба
+    «доходит до 5% и висит»: 5% — это как раз старт ffmpeg-извлечения кадров):
+
+      • stdin=DEVNULL — ffmpeg/COLMAP не наследуют stdin процесса-сервера и не
+        блокируются в ожидании ввода. Наследованный stdin — частая причина
+        зависшего ffmpeg: он трактует данные из stdin как интерактивные
+        команды ('q' и т.п.) и может замереть;
+      • вывод читается посимвольно и разбивается И по '\\n', И по '\\r':
+        ffmpeg пишет прогресс через '\\r' (перезапись одной строки), поэтому
+        обычный построчный итубор не отдавал НИ ОДНОЙ строки до конца
+        кодирования — лог выглядел «застрявшим на 5%», хотя работа шла;
+      • сторож простоя: если stall_warn секунд нет НИКАКОГО вывода — в лог
+        падает отметка «жив, простой N c», так что сразу видно, на какой
+        команде и как долго висим;
+      • жёсткий таймаут реально убивает процесс. Раньше timeout применялся к
+        wait() ПОСЛЕ вычитывания stdout — у зависшего процесса stdout не
+        закрывается, цикл чтения не заканчивается, и до w() дело не доходило:
+        зависание было вечным и бесследным.
+    """
+    printable = " ".join(str(c) for c in cmd)
+    job["logs"].append(f"[{_ts()}] $ {printable}")
     try:
+        # Читаем БАЙТАМИ (не text=True): в текстовом режиме Python включает
+        # universal-newlines и превращает '\r' в '\n', из-за чего строку
+        # прогресса ffmpeg нельзя отличить от обычной и не получается
+        # тротлить её — лог захлебнётся сотнями строк прогресса.
         proc = subprocess.Popen(
             [str(c) for c in cmd],
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-            text=True, cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            cwd=cwd,
         )
-        lines = []
-        for line in proc.stdout:
-            line = line.rstrip()
-            lines.append(line)
-            job["logs"].append(line)
-        proc.wait(timeout=timeout)
-        return proc.returncode, "\n".join(lines)
     except FileNotFoundError:
         msg = f"[Ошибка] Программа не найдена: {cmd[0]}. Убедитесь, что она установлена и доступна в PATH."
-        job["logs"].append(msg)
+        job["logs"].append(f"[{_ts()}] {msg}")
         return -127, msg
     except Exception as e:
         msg = f"[Ошибка] {e}"
-        job["logs"].append(msg)
+        job["logs"].append(f"[{_ts()}] {msg}")
         return -1, msg
+
+    job["logs"].append(f"[{_ts()}] ▶ запущен pid={proc.pid}")
+    start = time.monotonic()
+    last_out = [start]
+    lines: list[str] = []
+    done = threading.Event()
+    throttle = [0.0]  # '\r'-прогресс логируем не чаще раза в секунду
+
+    def flush(text: str, overwrite: bool):
+        text = text.rstrip()
+        if not text:
+            return
+        now = time.monotonic()
+        last_out[0] = now
+        if overwrite:  # строка прогресса ffmpeg — не спамим лог
+            if now - throttle[0] < 1.0:
+                return
+            throttle[0] = now
+        lines.append(text)
+        job["logs"].append(f"[{_ts()}] {text}")
+
+    def reader():
+        buf = bytearray()
+        try:
+            while True:
+                ch = proc.stdout.read(1)
+                if ch == b"":
+                    break
+                if ch == b"\n":
+                    flush(buf.decode("utf-8", "replace"), False); buf.clear()
+                elif ch == b"\r":
+                    flush(buf.decode("utf-8", "replace"), True); buf.clear()
+                else:
+                    buf += ch
+        finally:
+            flush(buf.decode("utf-8", "replace"), False)
+            done.set()
+
+    threading.Thread(target=reader, daemon=True).start()
+
+    poll = max(1, min(stall_warn, 5))
+    while not done.wait(timeout=poll):
+        now = time.monotonic()
+        if now - start > timeout:
+            job["logs"].append(f"[{_ts()}] ⏱ таймаут {timeout} c — принудительно завершаю pid={proc.pid}")
+            proc.kill()
+            done.wait(timeout=10)
+            return -9, "\n".join(lines)
+        if now - last_out[0] >= stall_warn:
+            job["logs"].append(
+                f"[{_ts()}] ⏳ нет вывода {int(now - last_out[0])} c "
+                f"(всего {int(now - start)} c), pid={proc.pid} — процесс ещё жив"
+            )
+            last_out[0] = now  # следующая отметка через stall_warn, а не спамом
+
+    proc.wait()
+    dur = time.monotonic() - start
+    job["logs"].append(f"[{_ts()}] ✔ завершено rc={proc.returncode} за {dur:.1f} c")
+    return proc.returncode, "\n".join(lines)
 
 
 # ─── Public API ───────────────────────────────────────────────
@@ -167,16 +251,26 @@ def _pipeline(job_id: str):
         _hdr(job, "ШАГ 1/3: Извлечение кадров (ffmpeg)")
 
         fps = job["fps"]
+        vp = Path(job["video_path"])
+        size_mb = vp.stat().st_size / 1024 / 1024 if vp.exists() else 0
+        job["logs"].append(
+            f"[{_ts()}] Видео: {vp.name} ({size_mb:.1f} МБ), существует={vp.exists()}, fps извлечения={fps}"
+        )
+        # -nostdin: не читать stdin (иначе ffmpeg может «зависнуть» на 5%,
+        # трактуя унаследованный stdin как интерактивный ввод).
         rc, _ = _run(job, [
-            "ffmpeg", "-i", job["video_path"],
+            "ffmpeg", "-nostdin",
+            "-i", job["video_path"],
             "-vf", f"fps={fps}",
             "-q:v", "2",
-            str(frames / "frame_%06d.jpg"),
             "-y",
+            str(frames / "frame_%06d.jpg"),
         ])
+        if rc != 0:
+            job["logs"].append(f"[{_ts()}] ⚠ ffmpeg вернул код {rc} — кадры могли извлечься не полностью")
 
         frame_count = len(list(frames.glob("*.jpg")))
-        job["logs"].append(f"Извлечено кадров: {frame_count}")
+        job["logs"].append(f"[{_ts()}] Извлечено кадров: {frame_count}")
         job["progress"] = 20
 
         if frame_count < 10:
