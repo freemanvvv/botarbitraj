@@ -1,6 +1,9 @@
 import { useState, useEffect } from "react";
 
-const API = "http://localhost:8765";
+// В проде фронт отдаётся тем же бэкендом → относительный base (origin
+// страницы), иначе localhost↔127.0.0.1 = разные origin и CORS роняет
+// запросы («Failed to fetch»). В dev (vite :5173) — абсолютный адрес.
+const API = import.meta.env.DEV ? "http://localhost:8765" : "";
 
 interface EstimateItem {
   type: "material" | "work";

@@ -15,6 +15,7 @@ import { useMemo, useRef, useState } from "react";
  * Правки уходят на /api/house/rerender (перерисовка + перепроверка норм).
  */
 
+const API = import.meta.env.DEV ? "http://localhost:8765" : "";  // прод: same-origin
 const SNAP_M = 0.05;       // шаг привязки при перетаскивании (5 см)
 const MIN_GAP_M = 0.6;     // мин. расстояние между соседними линиями разреза
 const PAD_M = 1.2;         // поле вокруг плана (м)
@@ -167,7 +168,7 @@ export default function PlanEditor({
   async function apply() {
     setSaving(true); setError("");
     try {
-      const res = await fetch("http://localhost:8765/api/house/rerender", {
+      const res = await fetch(`${API}/api/house/rerender`, {
         method: "POST", headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ building_kind: "house", check_norms: true, program, floorplan: work }),
       });
