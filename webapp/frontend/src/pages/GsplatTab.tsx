@@ -109,6 +109,15 @@ export default function GsplatTab() {
         const r = await fetch(
           `${API}/api/gsplat/jobs/${selectedJob.id}?log_offset=${logOffsetRef.current}`
         );
+        // Задачи живут в памяти сервера: после его перезапуска старая задача
+        // исчезает (404). Не долбим её вечно — снимаем выбор и убираем из
+        // списка, чтобы вернуться к загрузке нового видео.
+        if (r.status === 404) {
+          if (pollingRef.current) clearInterval(pollingRef.current);
+          setJobs(prev => prev.filter(j => j.id !== selectedJob.id));
+          setSelectedJob(null);
+          return;
+        }
         const d = await r.json();
         if (d.logs?.length) {
           setLogs(prev => [...prev, ...d.logs]);
