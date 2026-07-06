@@ -354,6 +354,38 @@ def test_load_templates_reads_gzip_when_present(tmp_path, monkeypatch):
     assert len(tpls) == 1 and tpls[0]["id"] == "poly1"   # прочитан .gz, не plain seed
 
 
+def test_polygon_apply_preserves_aspect_regardless_of_footprint():
+    """ЖЁСТКИЙ МАСШТАБ: форма комнат polygon-шаблона не искажается под разные
+    запрошенные габариты — соотношение сторон комнаты одинаково при любом
+    fw×fd (масштабируется только размер, площадь этажа сохраняется). Без этого
+    стена «сжатой» оси визуально короче стены «растянутой» при честной подписи."""
+    from src.bim_agents.layout_templates import _apply_polygon_template
+
+    class _R:
+        def __init__(self, i, a):
+            self.id, self.area_m2 = i, a
+
+    tpl = {"aspect": 1.3, "_source": "graph2plan_poly", "rooms": [
+        {"slot": "living", "category": "living", "polygon": [[0, 0], [0.5, 0], [0.5, 1], [0, 1]]},
+        {"slot": "bedroom", "category": "bedroom", "polygon": [[0.5, 0], [1, 0], [1, 1], [0.5, 1]]}]}
+
+    def room_ratio(fw, fd):
+        metas = [(_R("l", 40), "living"), (_R("b", 40), "bedroom")]
+        polys, _ = _apply_polygon_template(tpl, metas, fw, fd)
+        xs = [p[0] for p in polys["l"]]
+        ys = [p[1] for p in polys["l"]]
+        w, h = max(xs) - min(xs), max(ys) - min(ys)
+        return w / h, fw * fd
+
+    r1, a1 = room_ratio(13, 8)
+    r2, a2 = room_ratio(10, 10)
+    r3, a3 = room_ratio(8, 13)
+    # соотношение сторон комнаты инвариантно к форме запрошенного footprint'а
+    assert abs(r1 - r2) < 1e-3 and abs(r1 - r3) < 1e-3
+    # площадь этажа сохраняется (объём 3D/нормы не меняются)
+    assert abs(a1 - 13 * 8) < 1e-6 and abs(a2 - 100) < 1e-6
+
+
 def test_match_templates_returns_ranked_list_and_variant_cycles(monkeypatch):
     """match_templates отдаёт до N подходящих форм; match_template(variant=k)
     циклит по ним — основа «показать другой вариант»."""

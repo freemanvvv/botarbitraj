@@ -858,6 +858,19 @@ class HousePlanSaveRequest(BaseModel):
     norms_citations: str = Field("", max_length=20000)
 
 
+class HouseRerenderRequest(BaseModel):
+    """Отредактированная в интерактивном редакторе геометрия этажа(ей) — тот
+    же raw_program/raw_floorplan из ответа /api/house/plan, но с изменёнными
+    пользователем полигонами комнат/осями стен/проёмами. Возвращаем заново
+    отрендеренные SVG + перепроверку норм — правки идут в тот же формат
+    ответа мастера (только house: у квартир свой солвер, там ручной правки
+    геометрии пока нет)."""
+    building_kind: str = Field("house", pattern="^house$")
+    check_norms: bool = True
+    program: dict
+    floorplan: dict
+
+
 def _bbox_area(polygon: list) -> float:
     xs = [p[0] for p in polygon]
     ys = [p[1] for p in polygon]
@@ -1068,6 +1081,45 @@ def house_plan_save(req: HousePlanSaveRequest):
         norms_issues=req.norms_issues, norms_citations=req.norms_citations,
     )
     return {"plan_id": plan_id}
+
+
+@app.post("/api/house/rerender")
+def house_plan_rerender(req: HouseRerenderRequest):
+    """Перерисовывает SVG-этажи и перепроверяет нормы по отредактированной
+    вручную геометрии (кнопка «Редактировать» в мастере). Геометрию строит
+    фронт-редактор в тех же метрах и том же формате FloorPlan — тут только
+    валидируем контрактом, рендерим и (опц.) проверяем нормы, чтобы правки
+    сразу отражались в альбоме и в проверке КМК/ШНК до сохранения/3D."""
+    from src.bim_agents.contracts import BuildingProgram, FloorPlan
+    from src.floor_plan_render import render_storey_svg
+    from src.house_norms import validate_house_plan
+
+    try:
+        program = BuildingProgram(**req.program["building_program"])
+        floor_plan = FloorPlan(**req.floorplan)
+    except Exception as e:
+        raise HTTPException(422, f"Некорректная геометрия плана: {e}")
+
+    try:
+        floors = []
+        for storey in floor_plan.storeys:
+            area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
+            floors.append({
+                "level": storey.level,
+                "label": f"Этаж {storey.level}",
+                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "area_m2": round(area, 1),
+            })
+        norms_issues = validate_house_plan(program, floor_plan) if req.check_norms else []
+    except Exception as e:
+        raise _server_error(e, "Ошибка перерисовки плана")
+
+    return {
+        "floors": floors,
+        "norms_issues": norms_issues,
+        "raw_program": {"building_program": program.model_dump()},
+        "raw_floorplan": floor_plan.model_dump(),
+    }
 
 
 def _apartment_floorplan_from_dict(d: dict):

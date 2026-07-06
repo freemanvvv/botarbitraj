@@ -352,10 +352,16 @@ def test_polygon_template_survives_full_pipeline(monkeypatch):
         ],
     )
     fp = generate_floor_plan(program)
-    liv = next(rp.polygon for rp in fp.storeys[0].rooms if rp.id == "liv")
+    rooms = fp.storeys[0].rooms
+    liv = next(rp.polygon for rp in rooms if rp.id == "liv")
     assert len(liv) == 6  # реальная Г-форма дошла до плана
-    # масштабирована под footprint
-    assert abs(max(x for x, _ in liv) - 10.0) < 0.2 and abs(max(y for _, y in liv) - 9.0) < 0.2
+    # ЖЁСТКИЙ МАСШТАБ: габарит масштабируется с СОХРАНЕНИЕМ aspect шаблона
+    # (bbox L∪K = 100×100 → aspect 1.0), а не растягивается под 10×9. Площадь
+    # пятна сохраняется (fw·fd = 90 → сторона √90 ≈ 9.49 по обеим осям).
+    allx = [x for rp in rooms for x, _ in rp.polygon]
+    ally = [y for rp in rooms for _, y in rp.polygon]
+    side = 90 ** 0.5
+    assert abs(max(allx) - side) < 0.2 and abs(max(ally) - side) < 0.2
 
     path, stats = generate_ifc(fp, output_dir="/tmp")
     assert stats["spaces"] == 2

@@ -306,6 +306,53 @@ def test_house_plan_get_rerenders_floors_with_svg(monkeypatch, cleanup_house_pla
     assert body["raw_program"] == d["raw_program"]
 
 
+def test_house_rerender_reflects_edited_geometry(monkeypatch):
+    """POST /api/house/rerender (кнопка «Редактировать») принимает
+    отредактированную вручную геометрию, перерисовывает SVG и перепроверяет
+    нормы. Двигаем вершину комнаты и проверяем, что ответ считает площади/
+    нормы по НОВОЙ геометрии, а не по исходной."""
+    _mock_llm_json(monkeypatch, _HOUSE_PROGRAM)
+    gen = client.post("/api/house/plan", json={"building_kind": "house", "description": "дом", "check_norms": True})
+    d = gen.json()
+
+    edited = json.loads(json.dumps(d["raw_floorplan"]))  # deep copy
+    # раздвигаем первый этаж по X: все вершины/концы стен с максимальным x → +4 м
+    st = edited["storeys"][0]
+    xs = [p[0] for r in st["rooms"] for p in r["polygon"]]
+    maxx = max(xs)
+    for r in st["rooms"]:
+        for p in r["polygon"]:
+            if abs(p[0] - maxx) < 1e-6:
+                p[0] = maxx + 4.0
+    for w in st["walls"]:
+        for e in w["axis"]:
+            if abs(e[0] - maxx) < 1e-6:
+                e[0] = maxx + 4.0
+
+    r = client.post("/api/house/rerender", json={
+        "building_kind": "house", "check_norms": True,
+        "program": d["raw_program"], "floorplan": edited,
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert "<svg" in body["floors"][0]["svg"]
+    # площадь первого этажа выросла после раздвижки
+    assert body["floors"][0]["area_m2"] > d["floors"][0]["area_m2"]
+    # геометрия в ответе — именно отредактированная
+    rt = body["raw_floorplan"]["storeys"][0]["rooms"]
+    assert max(p[0] for r_ in rt for p in r_["polygon"]) > maxx + 3.9
+
+
+def test_house_rerender_rejects_broken_geometry():
+    # program без ключа building_program → KeyError в эндпоинте → 422,
+    # а не 500 (кривой ввод от фронта — это ошибка запроса, не сервера).
+    r = client.post("/api/house/rerender", json={
+        "building_kind": "house", "check_norms": False,
+        "program": {}, "floorplan": {"storeys": []},
+    })
+    assert r.status_code == 422
+
+
 def test_apartment_plan_get_rerenders_floors_with_svg(monkeypatch, cleanup_house_plans):
     _mock_llm_json(monkeypatch, _APARTMENT_PROGRAM)
     gen = client.post("/api/house/plan", json={"building_kind": "apartment", "description": "жк", "check_norms": True})

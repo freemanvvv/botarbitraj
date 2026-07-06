@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef } from "react";
 import ThreeViewer from "../components/ThreeViewer";
+import PlanEditor from "../components/PlanEditor";
 
 const API = "http://localhost:8765";
 
@@ -63,6 +64,7 @@ export default function Modeling() {
 
   const [savedPlanId, setSavedPlanId] = useState<number | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
+  const [editing, setEditing] = useState(false);
 
   const [build3dLoading, setBuild3dLoading] = useState(false);
   const [build3dError, setBuild3dError] = useState("");
@@ -101,7 +103,7 @@ export default function Modeling() {
       setPage(0);
       setLastDescription(d.description || "");
       setSavedPlanId(d.id);
-      setStats(null); setSelectedFile(null); setRightView("album");
+      setStats(null); setSelectedFile(null); setRightView("album"); setEditing(false);
       setMessages([{ role: "bot", content: `📂 Открыт сохранённый проект «${d.name}».` }]);
     } catch (e: any) {
       alert(e.message);
@@ -117,7 +119,7 @@ export default function Modeling() {
   const resetForNewObject = () => {
     setMessages([]); setInput(""); setPlan(null); setPage(0);
     setSavedPlanId(null); setStats(null); setSelectedFile(null);
-    setRightView("album"); setBuild3dError("");
+    setRightView("album"); setBuild3dError(""); setEditing(false);
   };
 
   const generatePlan = async (description: string, opts: { variant?: number; program?: any } = {}) => {
@@ -137,7 +139,7 @@ export default function Modeling() {
       setPlan(d);
       setPage(0);
       setSavedPlanId(null);
-      setStats(null); setSelectedFile(null); setRightView("album");
+      setStats(null); setSelectedFile(null); setRightView("album"); setEditing(false);
       setLastDescription(description);
       const errCount = d.norms_issues.filter((i: NormsIssue) => i.severity === "error").length;
       const vc = d.variant_count ?? 1;
@@ -213,6 +215,23 @@ export default function Modeling() {
     } finally {
       setSaveLoading(false);
     }
+  };
+
+  // Правки редактора применены: обновляем этажи/нормы/геометрию. Геометрия
+  // изменилась → черновик надо сохранить заново (сбрасываем savedPlanId).
+  const applyEdits = (res: { floors: Floor[]; norms_issues: NormsIssue[]; raw_program: any; raw_floorplan: any }) => {
+    setPlan(prev => prev ? {
+      ...prev,
+      floors: res.floors,
+      norms_issues: res.norms_issues,
+      raw_program: res.raw_program,
+      raw_floorplan: res.raw_floorplan,
+    } : prev);
+    setSavedPlanId(null);
+    setStats(null); setSelectedFile(null); setRightView("album");
+    setEditing(false);
+    const errCount = res.norms_issues.filter(i => i.severity === "error").length;
+    setMessages(prev => [...prev, { role: "bot", content: `✏️ Правки применены. Нарушений норм: ${errCount}. Сохраните проект, чтобы построить 3D.` }]);
   };
 
   const build3d = async () => {
@@ -386,10 +405,20 @@ export default function Modeling() {
                 {savedPlanId && <span style={{ marginLeft: "auto", fontSize: "0.75rem", color: "#30d158" }}>✅ Сохранено (#{savedPlanId})</span>}
               </div>
 
-              <div style={{ background: "#fff", borderRadius: 8, padding: 10, flexShrink: 0 }}
-                   dangerouslySetInnerHTML={{ __html: floor.svg }} />
+              {editing && plan.building_kind === "house" ? (
+                <PlanEditor
+                  program={plan.raw_program}
+                  floorplan={plan.raw_floorplan}
+                  page={page}
+                  onCancel={() => setEditing(false)}
+                  onApplied={applyEdits}
+                />
+              ) : (
+                <div style={{ background: "#fff", borderRadius: 8, padding: 10, flexShrink: 0 }}
+                     dangerouslySetInnerHTML={{ __html: floor.svg }} />
+              )}
 
-              {plan.floors.length > 1 && (
+              {!editing && plan.floors.length > 1 && (
                 <div className="pagination">
                   {plan.floors.map((f, i) => (
                     <button key={f.level} className={i === page ? "active" : ""} onClick={() => setPage(i)}>
@@ -430,10 +459,16 @@ export default function Modeling() {
                 </details>
               )}
 
+              {!editing && (
               <div style={{ display: "flex", gap: 8, marginTop: 12, flexWrap: "wrap" }}>
                 {(plan.variant_count ?? 1) > 1 && (
                   <button className="btn-gen" onClick={showVariant} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
                     🔀 Другой вариант формы
+                  </button>
+                )}
+                {plan.building_kind === "house" && (
+                  <button className="btn-gen" onClick={() => setEditing(true)} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
+                    ✏️ Редактировать
                   </button>
                 )}
                 <button className="btn-gen" onClick={regenerate} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
@@ -443,8 +478,9 @@ export default function Modeling() {
                   {saveLoading ? "⏳..." : savedPlanId ? "✅ Сохранено" : "💾 Сохранить"}
                 </button>
               </div>
+              )}
 
-              {savedPlanId && (
+              {!editing && savedPlanId && (
                 <button className="btn-gen" onClick={build3d} disabled={build3dLoading} style={{ marginTop: 8 }}>
                   {build3dLoading ? "⏳ Строю 3D-модель..." : "🧱 Сгенерировать 3D модель"}
                 </button>
