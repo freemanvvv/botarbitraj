@@ -123,20 +123,27 @@ def _run(job: dict, cmd: list, cwd: str = None, timeout: int = 7200,
         job["logs"].append(f"[{_ts()}] {text}")
 
     def reader():
+        # Читаем ЧАНКАМИ через read1 (возвращает то, что уже доступно, без
+        # ожидания заполнения буфера — прогресс виден сразу), а не по одному
+        # байту: read(1) на бурстовом выводе COLMAP делал syscall+GIL на КАЖДЫЙ
+        # байт и мог подвесить event-loop uvicorn (HTTP-опросы → «Failed to
+        # fetch»). Разбиваем накопленный буфер по '\n' и '\r'.
         buf = bytearray()
         try:
             while True:
-                ch = proc.stdout.read(1)
-                if ch == b"":
+                chunk = proc.stdout.read1(65536)
+                if not chunk:
                     break
-                if ch == b"\n":
-                    flush(buf.decode("utf-8", "replace"), False); buf.clear()
-                elif ch == b"\r":
-                    flush(buf.decode("utf-8", "replace"), True); buf.clear()
-                else:
-                    buf += ch
+                buf += chunk
+                start = 0
+                for i, byte in enumerate(buf):
+                    if byte == 10 or byte == 13:  # \n / \r
+                        flush(bytes(buf[start:i]).decode("utf-8", "replace"), byte == 13)
+                        start = i + 1
+                if start:
+                    del buf[:start]
         finally:
-            flush(buf.decode("utf-8", "replace"), False)
+            flush(bytes(buf).decode("utf-8", "replace"), False)
             done.set()
 
     threading.Thread(target=reader, daemon=True).start()
