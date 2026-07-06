@@ -20,6 +20,11 @@ export default function SplatViewer({ jobId, filename }: Props) {
   const viewerRef = useRef<any>(null);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
+  // COLMAP не задаёт «верх» сцены, и splat из него обычно грузится вверх ногами
+  // → по умолчанию поворачиваем на 180° вокруг оси X (кватернион [1,0,0,0]).
+  // Кнопка «Перевернуть» переключает на случай, если конкретная сцена вышла
+  // наоборот.
+  const [flipped, setFlipped] = useState(true);
 
   useEffect(() => {
     if (!containerRef.current || !jobId || !filename) return;
@@ -58,6 +63,9 @@ export default function SplatViewer({ jobId, filename }: Props) {
 
         await viewer.addSplatScene(plyUrl, {
           progressiveLoad: true,
+          // кватернион поворота сцены: [1,0,0,0] = 180° вокруг X (ставит
+          // «вверх ногами» COLMAP-сцену правильно), [0,0,0,1] = без поворота.
+          rotation: flipped ? [1, 0, 0, 0] : [0, 0, 0, 1],
           onProgress: (progress: number) => {
             if (progress >= 1) setLoading(false);
           },
@@ -81,7 +89,7 @@ export default function SplatViewer({ jobId, filename }: Props) {
       }
       container.innerHTML = "";
     };
-  }, [jobId, filename]);
+  }, [jobId, filename, flipped]);
 
   return (
     <div style={{ position: "relative", width: "100%", height: "100%" }}>
@@ -89,6 +97,20 @@ export default function SplatViewer({ jobId, filename }: Props) {
         ref={containerRef}
         style={{ width: "100%", height: "100%", background: "#0f172a" }}
       />
+      {!error && (
+        <button
+          onClick={() => setFlipped(f => !f)}
+          title="Перевернуть сцену (COLMAP не задаёт «верх»)"
+          style={{
+            position: "absolute", top: 10, right: 10, zIndex: 6,
+            padding: "6px 12px", borderRadius: 8, cursor: "pointer",
+            border: "1px solid var(--border2)", background: "rgba(15,23,42,0.85)",
+            color: "#fff", fontFamily: "inherit", fontSize: "0.8rem",
+          }}
+        >
+          🔄 Перевернуть
+        </button>
+      )}
       {loading && (
         <div style={{
           position: "absolute", inset: 0, display: "flex",
