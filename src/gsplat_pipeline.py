@@ -384,15 +384,22 @@ FPS извлечения: {fps}
 
         # Извлечение признаков
         job["logs"].append("[COLMAP] feature_extractor...")
-        _run(job, [
+        fe_cmd = [
             "colmap", "feature_extractor",
             "--database_path", db,
             "--image_path", str(frames),
             "--ImageReader.camera_model", "SIMPLE_RADIAL",
             "--ImageReader.single_camera", "1",
-            "--SiftExtraction.use_gpu", "1",
             "--SiftExtraction.max_num_features", "8192",
-        ])
+        ]
+        # --SiftExtraction.use_gpu передаём ТОЛЬКО при NVIDIA: COLMAP на Mac
+        # (Homebrew) собран без CUDA-SIFT, и эта опция там не распознаётся —
+        # раньше это валило feature_extractor (rc=1, база пустая → «0 кадров»).
+        # Без флага COLMAP сам выбирает доступный бэкенд (на Mac — SiftGPU через
+        # OpenGL/Metal или CPU).
+        if _has_nvidia_gpu():
+            fe_cmd += ["--SiftExtraction.use_gpu", "1"]
+        _run(job, fe_cmd)
         job["progress"] = 35
 
         # Матчинг: sequential лучше для видео
@@ -417,16 +424,30 @@ FPS извлечения: {fps}
         ])
         job["progress"] = 65
 
+        # COLMAP пишет модель в БИНАРНОМ виде (cameras.bin/images.bin/points3D.bin),
+        # а не в .txt — поэтому конвертируем в TXT, чтобы посчитать
+        # зарегистрированные кадры (иначе images.txt нет и всегда «0 кадров»,
+        # даже когда реконструкция удалась). Заодно .txt рядом не мешает.
+        sparse_0 = sparse / "0"
+        if sparse_0.exists() and not (sparse_0 / "images.txt").exists():
+            _run(job, [
+                "colmap", "model_converter",
+                "--input_path", str(sparse_0),
+                "--output_path", str(sparse_0),
+                "--output_type", "TXT",
+            ])
+
         # Подсчёт зарегистрированных кадров
         registered = 0
-        sparse_0 = sparse / "0"
         if sparse_0.exists():
             img_txt = sparse_0 / "images.txt"
             if img_txt.exists():
                 content = img_txt.read_text()
+                # в images.txt на каждое изображение — 2 строки (вторая = точки);
+                # строка регистрации оканчивается именем файла .jpg
                 registered = sum(
                     1 for ln in content.splitlines()
-                    if ln and not ln.startswith("#") and ".jpg" in ln
+                    if ln and not ln.startswith("#") and ln.rstrip().lower().endswith(".jpg")
                 )
 
         pct = int(100 * registered / frame_count) if frame_count else 0
