@@ -258,7 +258,7 @@ def _train_with_brush(job: dict, job_dir: Path, frames: Path, sparse: Path,
 # ─── Public API ───────────────────────────────────────────────
 
 def create_job(video_path: str, project_name: str,
-               fps: float = 1.0, model_id: str = None) -> str:
+               fps: float = 1.0, model_id: str = None, train_steps: int = 7000) -> str:
     job_id = str(uuid.uuid4())[:8]
     job_dir = GSPLAT_DATA_DIR / job_id
     job_dir.mkdir(parents=True)
@@ -269,6 +269,7 @@ def create_job(video_path: str, project_name: str,
         "project_name": project_name,
         "video_path": video_path,
         "fps": fps,
+        "train_steps": train_steps,   # число итераций обучения Brush (качество)
         "model_id": mid,
         "status": "pending",
         "step": "Ожидание запуска",
@@ -554,7 +555,8 @@ FPS извлечения: {fps}
         # машине, если CUDA-трейнеры не дали .ply.
         if not ply_path:
             job["logs"].append(f"[{_ts()}] [Info] Запускаю Brush (кросс-платформенный трейнер 3DGS)...")
-            ply_path = _train_with_brush(job, job_dir, frames, sparse, output)
+            ply_path = _train_with_brush(job, job_dir, frames, sparse, output,
+                                         steps=int(job.get("train_steps", 7000)))
 
         if not ply_path:
             raise RuntimeError(

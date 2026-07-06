@@ -1423,6 +1423,7 @@ async def gsplat_upload(
     project_name: str = Form("project"),
     fps: float = Form(1.0),
     model: str = Form(""),
+    train_steps: int = Form(7000),
 ):
     """Загружает видеофайл и создаёт задачу пайплайна."""
     allowed_ext = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
@@ -1444,6 +1445,7 @@ async def gsplat_upload(
             project_name=project_name or Path(file.filename).stem,
             fps=max(0.1, min(fps, 10.0)),
             model_id=model_id,
+            train_steps=max(1000, min(train_steps, 30000)),
         )
         start_job(job_id)
         return {"job_id": job_id, "message": "Пайплайн запущен"}

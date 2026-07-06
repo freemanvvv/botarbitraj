@@ -57,6 +57,7 @@ export default function GsplatTab() {
   const [file, setFile] = useState<File | null>(null);
   const [projectName, setProjectName] = useState("");
   const [fps, setFps] = useState(4.0);
+  const [trainSteps, setTrainSteps] = useState(7000);   // качество обучения Brush
   const [uploading, setUploading] = useState(false);
   const [uploadError, setUploadError] = useState("");
   const dragRef = useRef<HTMLDivElement>(null);
@@ -164,6 +165,7 @@ export default function GsplatTab() {
     fd.append("file", file);
     fd.append("project_name", projectName || file.name);
     fd.append("fps", String(fps));
+    fd.append("train_steps", String(trainSteps));
     try {
       const r = await fetch(`${API}/api/gsplat/upload`, { method: "POST", body: fd });
       const d = await r.json();
@@ -303,6 +305,31 @@ export default function GsplatTab() {
                   <div style={{ fontSize: "0.7rem", color: "var(--text3)", marginBottom: 12 }}>
                     Для облёта дрона нужна плотность кадров — цель ≈150–300 кадров.
                     Подбери FPS под длину ролика (короткий облёт → выше FPS).
+                  </div>
+
+                  <label style={{ fontSize: "0.8rem", color: "var(--text2)", display: "block", marginBottom: 6 }}>
+                    Качество обучения (итераций Brush)
+                  </label>
+                  <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                    {([["Быстро", 7000], ["Средне", 15000], ["Детально", 30000]] as [string, number][]).map(([label, steps]) => (
+                      <button
+                        key={steps}
+                        onClick={() => setTrainSteps(steps)}
+                        style={{
+                          flex: 1, padding: "6px 4px", borderRadius: 6, cursor: "pointer",
+                          fontSize: "0.75rem", fontFamily: "inherit",
+                          border: `1px solid ${trainSteps === steps ? "var(--accent)" : "var(--border)"}`,
+                          background: trainSteps === steps ? "var(--accent)" : "var(--bg2)",
+                          color: trainSteps === steps ? "#fff" : "var(--text2)",
+                        }}
+                      >
+                        {label}<br /><span style={{ fontSize: "0.65rem", opacity: 0.8 }}>{steps / 1000}k</span>
+                      </button>
+                    ))}
+                  </div>
+                  <div style={{ fontSize: "0.7rem", color: "var(--text3)", marginBottom: 12 }}>
+                    Больше итераций → чётче модель, но дольше (на Mac/Metal
+                    «Детально» — десятки минут).
                   </div>
                   {uploadError && (
                     <div style={{ color: "var(--danger)", fontSize: "0.8rem", marginBottom: 8 }}>
