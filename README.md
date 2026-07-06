@@ -51,16 +51,22 @@ pip install -r requirements.txt
 
 ```bash
 brew install ffmpeg colmap
-# Brush — трейнер 3DGS на Metal: github.com/ArthurBrussee/brush
-#   релиз-бинарь или `cargo install`, затем убедиться, что `brush` в PATH.
+# Brush — трейнер 3DGS на Metal (github.com/ArthurBrussee/brush).
+# Готовых бинарей нет — собирается из исходников, нужен Rust 1.88+:
+#   brew install rust        # или rustup
+#   git clone https://github.com/ArthurBrussee/brush && cd brush
+#   cargo build --release -p brush-cli
+#   бинарь: target/release/brush-cli  (headless-вариант, без GUI)
 ```
 
 Настройка (переменные окружения, необязательно):
 
-- `BRUSH_BIN=/путь/к/brush` — если бинаря нет в PATH.
-- `BRUSH_CMD="{bin} {data} --total-steps {steps} --export-path {ply}"` —
-  переопределить вызов Brush (флаги CLI зависят от версии). Плейсхолдеры:
-  `{bin} {data} {steps} {ply} {out_dir}`.
+- `BRUSH_BIN=/путь/к/target/release/brush-cli` — если бинаря нет в PATH.
+- `BRUSH_CMD` — переопределить вызов Brush. Дефолт (флаги сверены по исходникам
+  brush-cli):
+  `{bin} {data} --total-train-iters {steps} --export-path {out_dir} --export-name model_{iter}.ply`.
+  Плейсхолдеры подставляются простым replace: `{bin} {data} {steps} {ply} {out_dir}`
+  (прочие фигурные скобки, напр. `{iter}`, уходят в Brush как есть).
 
 Готовый `.ply` можно и не обучать здесь, а загрузить через «Загрузить готовый
 .ply» — вьюер работает без GPU-обучения.

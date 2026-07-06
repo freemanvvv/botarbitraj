@@ -178,8 +178,11 @@ def _has_nvidia_gpu() -> bool:
 
 
 def _find_brush() -> Optional[str]:
-    """Путь к бинарю Brush: сперва BRUSH_BIN, затем PATH."""
-    return os.environ.get("BRUSH_BIN") or shutil.which("brush")
+    """Путь к бинарю Brush: сперва BRUSH_BIN, затем PATH. Headless-бинарь
+    называется brush-cli (apps/brush-cli); brush — оставлен запасным именем."""
+    return (os.environ.get("BRUSH_BIN")
+            or shutil.which("brush-cli")
+            or shutil.which("brush"))
 
 
 def _latest_ply(output: Path) -> Optional[str]:
@@ -218,25 +221,35 @@ def _train_with_brush(job: dict, job_dir: Path, frames: Path, sparse: Path,
     brush = _find_brush()
     if not brush:
         job["logs"].append(
-            f"[{_ts()}] [Brush] Бинарь brush не найден. Установите Brush — трейнер "
-            "3DGS на Metal/wgpu, работает на Mac без NVIDIA:"
+            f"[{_ts()}] [Brush] Бинарь brush-cli не найден. Установите Brush — "
+            "трейнер 3DGS на Metal/wgpu, работает на Mac без NVIDIA:"
         )
-        job["logs"].append("           • релиз: github.com/ArthurBrussee/brush (или cargo install)")
-        job["logs"].append("           • путь можно задать: BRUSH_BIN=/путь/к/brush")
+        job["logs"].append("           • нужен Rust 1.88+; собрать: cargo build --release -p brush-cli")
+        job["logs"].append("           • бинарь: target/release/brush-cli")
+        job["logs"].append("           • путь можно задать: BRUSH_BIN=/путь/к/brush-cli")
         return None
 
     data = _prepare_brush_dataset(job_dir, frames, sparse)
-    out_ply = output / "brush" / "model.ply"
-    out_ply.parent.mkdir(parents=True, exist_ok=True)
+    out_dir = output / "brush"
+    out_dir.mkdir(parents=True, exist_ok=True)
+    out_ply = out_dir / "model_{iter}.ply"  # для override, если кто-то использует {ply}
 
+    # Флаги подтверждены по исходникам brush-cli: позиционный путь COLMAP,
+    # без --with-viewer = headless, --total-train-iters = число шагов,
+    # --export-path — ДИРЕКТОРИЯ, --export-name — шаблон имени ({iter} Brush
+    # подставляет сам). Переопределяемо через BRUSH_CMD (плейсхолдеры
+    # {bin} {data} {steps} {ply} {out_dir}; подстановка простым replace, чтобы
+    # литеральные фигурные скобки шаблона имени, напр. {iter}, не ломались).
     template = os.environ.get(
         "BRUSH_CMD",
-        "{bin} {data} --total-steps {steps} --export-path {ply}",
+        "{bin} {data} --total-train-iters {steps} --export-every {steps} "
+        "--export-path {out_dir} --export-name model_{iter}.ply",
     )
-    cmd = shlex.split(template.format(
-        bin=brush, data=str(data), steps=steps,
-        ply=str(out_ply), out_dir=str(out_ply.parent),
-    ))
+    cmd_str = template
+    for key, val in (("{bin}", brush), ("{data}", str(data)), ("{steps}", str(steps)),
+                     ("{ply}", str(out_ply)), ("{out_dir}", str(out_dir))):
+        cmd_str = cmd_str.replace(key, val)
+    cmd = shlex.split(cmd_str)
     job["logs"].append(f"[{_ts()}] [Brush] Обучение на Metal/wgpu (Mac-совместимо), шагов: {steps}")
     _run(job, cmd, timeout=10800)
     return _latest_ply(output)

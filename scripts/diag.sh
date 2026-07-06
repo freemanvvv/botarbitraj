@@ -46,14 +46,15 @@ if command -v colmap >/dev/null 2>&1; then
   colmap feature_extractor --help 2>&1 | grep -i "use_gpu" || echo "(опции use_gpu нет → сборка без GPU-SIFT, это ок, пайплайн её больше не передаёт)"
 fi
 
-line "BRUSH (трейнер 3DGS на Mac)"
-if command -v brush >/dev/null 2>&1 || [ -n "$BRUSH_BIN" ]; then
-  BB="${BRUSH_BIN:-$(command -v brush)}"
+line "BRUSH (трейнер 3DGS на Mac, headless-бинарь brush-cli)"
+BB="${BRUSH_BIN:-$(command -v brush-cli 2>/dev/null || command -v brush 2>/dev/null)}"
+if [ -n "$BB" ] && [ -x "$BB" ]; then
   echo "✅ brush → $BB"
-  echo "--- brush --help (нужно, чтобы сверить команду обучения) ---"
-  "$BB" --help 2>&1 | head -60
+  echo "--- --help (сверка команды обучения) ---"
+  "$BB" --help 2>&1 | head -40
 else
-  echo "❌ brush не найден. Установи и/или задай BRUSH_BIN=/путь/к/brush"
+  echo "❌ brush-cli не найден. Собрать: cargo build --release -p brush-cli"
+  echo "   затем задать BRUSH_BIN=/путь/к/target/release/brush-cli"
 fi
 
 line "LM STUDIO (локальный LLM, опционально)"
