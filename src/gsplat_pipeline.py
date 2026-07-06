@@ -11,6 +11,8 @@ LLM (локальный через LM Studio) участвует в каждом
 from __future__ import annotations
 
 import os
+import shlex
+import shutil
 import subprocess
 import threading
 import time
@@ -160,6 +162,79 @@ def _run(job: dict, cmd: list, cwd: str = None, timeout: int = 7200,
     return proc.returncode, "\n".join(lines)
 
 
+# ─── Обучение: выбор трейнера (CUDA vs Mac/Brush) ─────────────
+
+def _has_nvidia_gpu() -> bool:
+    """CUDA-трейнеры (Nerfstudio/gsplat) требуют NVIDIA GPU. Наличие nvidia-smi
+    — надёжный признак. На Mac его нет → обучаем через Brush (Metal/wgpu)."""
+    return shutil.which("nvidia-smi") is not None
+
+
+def _find_brush() -> Optional[str]:
+    """Путь к бинарю Brush: сперва BRUSH_BIN, затем PATH."""
+    return os.environ.get("BRUSH_BIN") or shutil.which("brush")
+
+
+def _latest_ply(output: Path) -> Optional[str]:
+    plys = list(output.rglob("*.ply"))
+    return str(max(plys, key=lambda p: p.stat().st_size)) if plys else None
+
+
+def _prepare_brush_dataset(job_dir: Path, frames: Path, sparse: Path) -> Path:
+    """Собирает COLMAP-датасет в раскладке, которую ждёт Brush: images/ и sparse/
+    под одним корнем. Кадры не копируем — symlink (fallback на копию, если ФС
+    без симлинков)."""
+    root = job_dir / "brush_data"
+    root.mkdir(exist_ok=True)
+    for name, target in (("images", frames), ("sparse", sparse)):
+        link = root / name
+        if link.is_symlink() or link.exists():
+            continue
+        try:
+            link.symlink_to(target, target_is_directory=True)
+        except OSError:
+            shutil.copytree(target, link)
+    return root
+
+
+def _train_with_brush(job: dict, job_dir: Path, frames: Path, sparse: Path,
+                      output: Path, steps: int = 7000) -> Optional[str]:
+    """Обучение Gaussian Splatting через Brush — кросс-платформенный трейнер на
+    Rust/wgpu, работает на Apple Silicon (Metal) БЕЗ NVIDIA/CUDA. Даёт .ply,
+    совместимый с существующим вьюером.
+
+    Флаги CLI Brush зависят от версии, поэтому команду можно переопределить
+    переменной окружения BRUSH_CMD с плейсхолдерами {bin} {data} {steps} {ply}
+    {out_dir} — так пользователь подстроит вызов под свою сборку без правки
+    кода. Возвращает путь к .ply или None (тогда пайплайн отдаёт понятную
+    ошибку с инструкцией по установке)."""
+    brush = _find_brush()
+    if not brush:
+        job["logs"].append(
+            f"[{_ts()}] [Brush] Бинарь brush не найден. Установите Brush — трейнер "
+            "3DGS на Metal/wgpu, работает на Mac без NVIDIA:"
+        )
+        job["logs"].append("           • релиз: github.com/ArthurBrussee/brush (или cargo install)")
+        job["logs"].append("           • путь можно задать: BRUSH_BIN=/путь/к/brush")
+        return None
+
+    data = _prepare_brush_dataset(job_dir, frames, sparse)
+    out_ply = output / "brush" / "model.ply"
+    out_ply.parent.mkdir(parents=True, exist_ok=True)
+
+    template = os.environ.get(
+        "BRUSH_CMD",
+        "{bin} {data} --total-steps {steps} --export-path {ply}",
+    )
+    cmd = shlex.split(template.format(
+        bin=brush, data=str(data), steps=steps,
+        ply=str(out_ply), out_dir=str(out_ply.parent),
+    ))
+    job["logs"].append(f"[{_ts()}] [Brush] Обучение на Metal/wgpu (Mac-совместимо), шагов: {steps}")
+    _run(job, cmd, timeout=10800)
+    return _latest_ply(output)
+
+
 # ─── Public API ───────────────────────────────────────────────
 
 def create_job(video_path: str, project_name: str,
@@ -287,11 +362,11 @@ def _pipeline(job_id: str):
 Видеофайл: {Path(job['video_path']).name}
 FPS извлечения: {fps}
 Кадров извлечено: {frame_count}
-Тип сцены: дорога, съёмка с движущегося автомобиля (forward-facing).
+Тип съёмки: видео (напр. облёт дрона вокруг объекта, обход здания/участка или проезд).
 
 Оцени входные данные и дай рекомендации по 3 пунктам:
 1. Достаточно ли кадров для качественной реконструкции?
-2. Какие параметры COLMAP лучше для дорожной сцены?
+2. Какие параметры COLMAP лучше под такой тип съёмки?
 3. Чего ожидать от итоговой 3D-модели?
 Ответ кратко по-русски (3-5 предложений).""", mid
         )
@@ -368,10 +443,10 @@ FPS извлечения: {fps}
         job["logs"].append("")
         job["logs"].append("[LLM] Анализирую результаты COLMAP...")
         colmap_analysis = _llm(
-            f"""Результаты COLMAP для видео с дорожного регистратора:
+            f"""Результаты COLMAP для видео (напр. облёт дрона / съёмка объекта):
 - Кадров на входе: {frame_count}
 - Зарегистрировано: {registered} ({pct}%)
-- Тип сцены: forward-facing дорога
+- Тип съёмки: видео с непрерывной траектории (облёт/обход/проезд)
 
 Дай оценку и рекомендации для gsplat:
 1. Насколько хорошо прошла реконструкция ({pct}% — это много или мало)?
@@ -390,41 +465,47 @@ FPS извлечения: {fps}
         _hdr(job, "ШАГ 3/3: Обучение Gaussian Splatting")
 
         ply_path = None
+        has_gpu = _has_nvidia_gpu()
 
-        # Попытка 1: Nerfstudio splatfacto (лучший для forward-facing)
-        job["logs"].append("[Info] Попытка запуска через Nerfstudio (splatfacto)...")
-        ns_rc, _ = _run(job, [
-            "ns-train", "splatfacto",
-            "--data", str(colmap),
-            "--output-dir", str(output),
-            "--max-num-iterations", "7000",
-            "--viewer.quit-on-train-completion", "True",
-        ], timeout=10800)
-
-        if ns_rc == 0:
-            plys = list(output.rglob("*.ply"))
-            if plys:
-                ply_path = str(max(plys, key=lambda p: p.stat().st_size))
-
-        # Попытка 2: gsplat simple_trainer
-        if not ply_path:
-            job["logs"].append("[Info] Nerfstudio недоступен, пробую gsplat...")
-            gs_rc, _ = _run(job, [
-                "python", "-m", "gsplat.simple_trainer",
-                "--data_dir", str(sparse_0),
-                "--result_dir", str(output / "gsplat"),
-                "--max_steps", "7000",
+        if has_gpu:
+            # На NVIDIA/CUDA — привычные трейнеры (качество/скорость выше).
+            job["logs"].append(f"[{_ts()}] [Info] Обнаружен NVIDIA GPU. Пробую Nerfstudio (splatfacto)...")
+            ns_rc, _ = _run(job, [
+                "ns-train", "splatfacto",
+                "--data", str(colmap),
+                "--output-dir", str(output),
+                "--max-num-iterations", "7000",
+                "--viewer.quit-on-train-completion", "True",
             ], timeout=10800)
+            if ns_rc == 0:
+                ply_path = _latest_ply(output)
 
-            plys = list(output.rglob("*.ply"))
-            if plys:
-                ply_path = str(max(plys, key=lambda p: p.stat().st_size))
+            if not ply_path:
+                job["logs"].append(f"[{_ts()}] [Info] Nerfstudio недоступен, пробую gsplat...")
+                _run(job, [
+                    "python", "-m", "gsplat.simple_trainer",
+                    "--data_dir", str(sparse_0),
+                    "--result_dir", str(output / "gsplat"),
+                    "--max_steps", "7000",
+                ], timeout=10800)
+                ply_path = _latest_ply(output)
+        else:
+            job["logs"].append(
+                f"[{_ts()}] [Info] NVIDIA GPU не найден (напр. Mac) — CUDA-трейнеры "
+                "(Nerfstudio/gsplat) недоступны, обучаю через Brush (Metal/wgpu)."
+            )
+
+        # Brush — трейнер на Metal/wgpu: основной путь на Mac и запасной на любой
+        # машине, если CUDA-трейнеры не дали .ply.
+        if not ply_path:
+            job["logs"].append(f"[{_ts()}] [Info] Запускаю Brush (кросс-платформенный трейнер 3DGS)...")
+            ply_path = _train_with_brush(job, job_dir, frames, sparse, output)
 
         if not ply_path:
             raise RuntimeError(
-                "Обучение завершилось, но .ply файл не создан. "
-                "Убедитесь, что Nerfstudio или gsplat установлены, "
-                "и на сервере есть NVIDIA GPU с CUDA."
+                "Обучение не создало .ply. На Mac (без NVIDIA) установите Brush "
+                "(github.com/ArthurBrussee/brush) и COLMAP; на машине с NVIDIA — "
+                "Nerfstudio или gsplat (CUDA). Подробности в логе выше."
             )
 
         job["output_ply"] = ply_path
@@ -435,7 +516,7 @@ FPS извлечения: {fps}
         job["logs"].append("[LLM] Генерирую финальный отчёт...")
         report = _llm(
             f"""Gaussian Splatting реконструкция завершена успешно!
-Источник: видео с дорожного регистратора
+Источник: видео (облёт дрона / съёмка объекта)
 Использовано кадров: {registered}
 Файл модели: {Path(ply_path).name} ({Path(ply_path).stat().st_size // 1024 // 1024} МБ)
 

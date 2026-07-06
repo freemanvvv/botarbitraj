@@ -37,6 +37,34 @@ pip install -r requirements.txt
 
 Требования: Python 3.12, LM Studio v0.4+, Apple Metal (для Mac)
 
+## 3D-карты (Gaussian Splatting)
+
+Пайплайн: `видео → кадры (ffmpeg) → позиции камер (COLMAP) → обучение 3DGS → .ply`
+(вкладка «3D-карты»). Обучение выбирается по железу автоматически:
+
+- **Mac / без NVIDIA** — трейнер **Brush** (Rust/wgpu, работает на Apple Silicon
+  через Metal, БЕЗ CUDA). Это путь по умолчанию, когда `nvidia-smi` не найден.
+- **Машина с NVIDIA GPU** — Nerfstudio (`ns-train splatfacto`) или gsplat (CUDA),
+  а Brush остаётся запасным вариантом.
+
+Установка зависимостей на Mac:
+
+```bash
+brew install ffmpeg colmap
+# Brush — трейнер 3DGS на Metal: github.com/ArthurBrussee/brush
+#   релиз-бинарь или `cargo install`, затем убедиться, что `brush` в PATH.
+```
+
+Настройка (переменные окружения, необязательно):
+
+- `BRUSH_BIN=/путь/к/brush` — если бинаря нет в PATH.
+- `BRUSH_CMD="{bin} {data} --total-steps {steps} --export-path {ply}"` —
+  переопределить вызов Brush (флаги CLI зависят от версии). Плейсхолдеры:
+  `{bin} {data} {steps} {ply} {out_dir}`.
+
+Готовый `.ply` можно и не обучать здесь, а загрузить через «Загрузить готовый
+.ply» — вьюер работает без GPU-обучения.
+
 ## Архитектура
 
 ```

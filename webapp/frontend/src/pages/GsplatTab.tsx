@@ -460,15 +460,16 @@ export default function GsplatTab() {
                 <div style={{ textAlign: "center" }}>
                   <strong style={{ color: "var(--text)" }}>Как это работает</strong>
                   <div style={{ fontSize: "0.85rem", marginTop: 8, lineHeight: 1.8 }}>
-                    1. Загрузи видео с регистратора или фотографии<br />
+                    1. Загрузи видео (облёт дрона, обход объекта) или фото<br />
                     2. LLM анализирует данные и задаёт параметры<br />
                     3. COLMAP восстанавливает позиции камер<br />
-                    4. gsplat обучает 3D-модель сцены (~10–20 мин)<br />
+                    4. Обучение 3D-модели сцены (~10–20 мин)<br />
                     5. Открой результат в 3D-вьюере
                   </div>
                   <div style={{ marginTop: 12, fontSize: "0.75rem", color: "var(--text2)", padding: "10px 16px", background: "var(--surface2)", borderRadius: 8 }}>
-                    ⚠️ Требуется: <strong>ffmpeg</strong>, <strong>COLMAP</strong>,<br />
-                    <strong>Nerfstudio</strong> или <strong>gsplat</strong> + NVIDIA GPU
+                    ⚠️ Требуется: <strong>ffmpeg</strong> + <strong>COLMAP</strong>.<br />
+                    Обучение: <strong>Brush</strong> (Metal, работает на Mac) —<br />
+                    или <strong>Nerfstudio</strong>/<strong>gsplat</strong> при наличии NVIDIA GPU
                   </div>
                 </div>
               </div>
