@@ -34,14 +34,15 @@ def _server_error(e: Exception, client_message: str) -> HTTPException:
 
 app = FastAPI(title="Construction AI Copilot")
 
+# Разрешаем ЛЮБОЙ локальный origin (localhost/127.0.0.1 на любом порту): фронт
+# может открываться и по localhost:8765, и по 127.0.0.1:8765, и с dev-сервера
+# vite (:5173) — для браузера это РАЗНЫЕ origin, и раньше запрос к API с
+# «неразрешённого» адреса роняло по CORS («Failed to fetch», причём ещё до
+# создания задачи). Инструмент локальный и открытый — сужаем до localhost/
+# 127.0.0.1, но без привязки к конкретному порту.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:3000",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:3000",
-    ],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_methods=["*"],
     allow_headers=["*"],
 )
