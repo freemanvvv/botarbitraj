@@ -295,6 +295,18 @@ export default function GsplatTab() {
                 />
               </div>
 
+              <div style={{
+                fontSize: "0.72rem", color: "var(--text2)", lineHeight: 1.6,
+                background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)",
+                borderRadius: 8, padding: "8px 10px", margin: "10px 0",
+              }}>
+                📸 <strong>Как снимать для чёткой 3D-модели:</strong> облёт <strong>по кругу
+                вокруг ОДНОГО объекта</strong> (здание, дом, памятник), держа его в центре;
+                ближе и ниже; 1–2 витка, плавно, перекрытие соседних кадров ~70%.
+                <br />⚠️ Обзорный пролёт района или съёмка с большой высоты дадут «туман» —
+                метод (Gaussian Splatting) для такого не подходит.
+              </div>
+
               {file && (
                 <>
                   <input
