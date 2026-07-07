@@ -258,14 +258,56 @@ def chat_endpoint(req: ChatRequest):
                     for r in relevant
                 ]
 
+        # Фолбэк на архив: векторный индекс мог не дать совпадений (или он ещё
+        # почти пуст — текст документов не проиндексирован). Но документ может
+        # СУЩЕСТВОВАТЬ в архиве (sources.csv — метаданные ships в репо), и тогда
+        # честнее показать его, а не «ничего не найдено». Ровно этот случай:
+        # «пожарная безопасность» есть в Архиве, но не в ChromaDB.
+        archive_only = False
+        if req.use_rag and not context:
+            try:
+                from src.normbase.norms_knowledge import search_sources_csv
+                # берём с запасом и ранжируем по числу совпавших слов запроса в
+                # названии (иначе OR-поиск выносит наверх документы, совпавшие
+                # лишь по общему слову вроде «здания»).
+                kws = [w for w in req.message.lower().split() if len(w) > 3]
+                hits = search_sources_csv(req.message[:80], str(SOURCES_CSV), limit=30)
+                hits.sort(key=lambda h: sum(
+                    kw in f"{h.get('title','')} {h.get('number','')}".lower() for kw in kws
+                ), reverse=True)
+                archive_hits = hits[:5]
+            except Exception:
+                archive_hits = []
+            if archive_hits:
+                context = ("Связанные документы из архива нормативов (их полный текст ещё не "
+                           "проиндексирован для поиска, но по названию они относятся к запросу):\n\n")
+                for h in archive_hits:
+                    context += f"[{h.get('doc_type','')} {h.get('number','')} — {h.get('title','')}]\n"
+                rag_chunks = [{
+                    "citation": f"{h.get('doc_type','')} {h.get('number','')}".strip(),
+                    "score": None,   # это не similarity-совпадение, а метаданные архива
+                    "doc_type": h.get("doc_type", ""),
+                    "number": h.get("number", ""),
+                    "title": h.get("title", ""),
+                } for h in archive_hits]
+                archive_only = True
+
         # Системный промпт зависит от того, найден ли релевантный контекст
-        if context:
+        if context and not archive_only:
             sys_prompt = req.system_prompt or (
                 "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
                 "Отвечай ТОЛЬКО на основе приведённых фрагментов нормативов. "
                 "Обязательно ссылайся на документ и пункт. "
                 "Не добавляй информацию из собственных знаний — только то, что есть в контексте. "
                 "Если конкретного ответа в найденных фрагментах нет — прямо скажи об этом."
+            )
+        elif archive_only:
+            sys_prompt = (
+                "Ты — Construction AI Copilot. Проиндексированных фрагментов ТЕКСТА по запросу "
+                "нет, но в архиве нормативов есть подходящие по теме документы (перечислены в "
+                "контексте). Кратко назови их пользователю (тип, номер, название) и посоветуй "
+                "открыть во вкладке «Архив». НЕ придумывай содержание пунктов — полного текста "
+                "этих документов у тебя нет."
             )
         else:
             sys_prompt = (

@@ -2,7 +2,7 @@ import { useState, useEffect, useRef } from "react";
 
 interface RagChunk {
   citation: string;
-  score: number;
+  score: number | null;   // null — совпадение по архиву (метаданные), не similarity
   doc_type: string;
   number: string;
   title: string;
@@ -149,7 +149,7 @@ export default function ChatTab() {
                             <strong>{c.doc_type} {c.number}</strong>
                             {c.title ? ` — ${c.title}` : ""}
                             <span style={{ marginLeft: 6, color: "var(--accent)", fontSize: "0.7rem" }}>
-                              {Math.round(c.score * 100)}%
+                              {c.score != null ? `${Math.round(c.score * 100)}%` : "из архива"}
                             </span>
                           </div>
                         ))}
