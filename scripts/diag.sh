@@ -59,6 +59,41 @@ fi
 
 line "LM STUDIO (локальный LLM, опционально)"
 curl -s -o /dev/null -w "GET /v1/models → %{http_code}\n" http://localhost:1234/v1/models 2>&1 || echo "недоступен (LLM-комментарии будут пропущены, на 3D-билд не влияет)"
+echo "--- эмбеддинг-модель для RAG (нужна для индексации/чата по нормам) ---"
+EMB_MODEL="text-embedding-nomic-embed-text-v1.5"
+EMB_CODE=$(curl -s -o /tmp/_emb.json -w "%{http_code}" http://localhost:1234/v1/embeddings \
+  -H "Content-Type: application/json" \
+  -d "{\"model\":\"$EMB_MODEL\",\"input\":\"тест\"}" 2>/dev/null || echo "000")
+if [ "$EMB_CODE" = "200" ]; then
+  echo "✅ эмбеддинги работают ($EMB_MODEL)"
+else
+  echo "❌ /v1/embeddings → $EMB_CODE. В LM Studio НЕ загружена embedding-модель"
+  echo "   ($EMB_MODEL) — без неё индекс норм не собрать и чат по нормам пуст."
+fi
+
+line "RAG-ИНДЕКС (ChromaDB — то, что читает чат по нормам)"
+PY="./.venv/bin/python"; [ -x "$PY" ] || PY="python3"
+"$PY" - <<'PYEOF' 2>/dev/null || echo "не удалось прочитать chroma (нет chromadb в этом python?)"
+import os
+os.environ["ANONYMIZED_TELEMETRY"] = "False"
+try:
+    import chromadb
+    from pathlib import Path
+    p = Path("data/chroma_db")
+    if not p.exists():
+        print("❌ data/chroma_db не существует — индекс не собран"); raise SystemExit
+    cl = chromadb.PersistentClient(path=str(p))
+    cols = cl.list_collections()
+    if not cols:
+        print("❌ коллекций нет — индекс не собран")
+    for c in cols:
+        n = c.count()
+        mark = "✅" if n > 100 else "⚠️"
+        print(f"  {mark} {c.name}: {n} чанков")
+    print("  (чат по нормам читает коллекцию 'uz_construction_norms' — в ней должны быть тысячи)")
+except Exception as e:
+    print("ошибка:", e)
+PYEOF
 
 line "БЭКЕНД (если запущен)"
 curl -s -o /dev/null -w "GET /api/gsplat/jobs → %{http_code}\n" http://127.0.0.1:8765/api/gsplat/jobs 2>&1 || echo "не запущен"
