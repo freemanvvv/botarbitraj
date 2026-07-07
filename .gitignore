@@ -9,6 +9,10 @@ dist/
 node_modules/
 webapp/frontend/dist/
 
+## Self-hosted SuperSplat (собирается scripts/setup_supersplat.sh)
+webapp/supersplat/
+.supersplat-src/
+
 ## IDE
 .vscode/
 .idea/

@@ -212,6 +212,21 @@ export default function GsplatTab() {
     setTab("viewer");
   };
 
+  // ── SuperSplat (локальный редактор/чистка) ───────────────
+  const [superSplat, setSuperSplat] = useState(false);
+  useEffect(() => {
+    fetch(`${API}/api/gsplat/supersplat`).then(r => r.json())
+      .then(d => setSuperSplat(!!d.available)).catch(() => {});
+  }, []);
+
+  const openSuperSplat = (m: PlyModel) => {
+    // SuperSplat отдаётся тем же бэкендом (/supersplat), .ply — тем же origin,
+    // поэтому ?load грузится без CORS. filename задаёт имя при экспорте.
+    const plyUrl = `${window.location.origin}/api/gsplat/ply/${m.job_id}/${m.ply_filename}`;
+    const url = `/supersplat/?load=${encodeURIComponent(plyUrl)}&filename=${encodeURIComponent(m.ply_filename)}`;
+    window.open(url, "_blank");
+  };
+
   // ── Render ───────────────────────────────────────────────
   return (
     <div>
@@ -551,6 +566,19 @@ export default function GsplatTab() {
                   <div style={{ fontSize: "0.72rem", color: "var(--text2)" }}>
                     {m.ply_filename}<br />{m.size_mb} МБ
                   </div>
+                  {superSplat && (
+                    <button
+                      onClick={e => { e.stopPropagation(); openSuperSplat(m); }}
+                      title="Открыть в SuperSplat — обрезать шум/floaters и экспортировать чистый .ply"
+                      style={{
+                        marginTop: 8, width: "100%", padding: "5px 8px", borderRadius: 6,
+                        cursor: "pointer", fontSize: "0.72rem", fontFamily: "inherit",
+                        border: "1px solid var(--border2)", background: "var(--bg2)", color: "var(--text)",
+                      }}
+                    >
+                      ✂️ Очистить в SuperSplat
+                    </button>
+                  )}
                 </div>
               ))
             }

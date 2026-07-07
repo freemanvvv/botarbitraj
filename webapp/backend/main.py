@@ -1504,6 +1504,14 @@ def gsplat_models():
         raise _server_error(e, "Ошибка получения списка моделей")
 
 
+@app.get("/api/gsplat/supersplat")
+def gsplat_supersplat_status():
+    """Установлен ли локальный SuperSplat (webapp/supersplat/dist). Фронт по
+    этому флагу показывает кнопку «Очистить в SuperSplat»."""
+    dist = Path(__file__).resolve().parent.parent / "supersplat" / "dist"
+    return {"available": dist.exists()}
+
+
 @app.get("/api/gsplat/ply/{job_id}/{filename}")
 def gsplat_serve_ply(job_id: str, filename: str):
     """Отдаёт .ply файл для вьюера."""
@@ -1760,6 +1768,14 @@ def check_ifc():
     except Exception:
         return False
 
+
+# Self-hosted SuperSplat (редактор/чистка .ply). Собирается один раз скриптом
+# scripts/setup_supersplat.sh в webapp/supersplat/dist. Монтируем ДО catch-all
+# "/" (иначе фронт перехватит путь). Открывается с ?load=<url> — тем же
+# origin'ом, что и API, так что .ply тянется без CORS.
+SUPERSPLAT_DIST = Path(__file__).resolve().parent.parent / "supersplat" / "dist"
+if SUPERSPLAT_DIST.exists():
+    app.mount("/supersplat", StaticFiles(directory=str(SUPERSPLAT_DIST), html=True), name="supersplat")
 
 # Serve production frontend (built React app)
 FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
