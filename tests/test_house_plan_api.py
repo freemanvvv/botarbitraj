@@ -106,6 +106,30 @@ def test_house_plan_generates_house_floors_and_flags_norm_violations(monkeypatch
     assert d["raw_program"]["building_program"]["project_name"] == "Дом Тест"
 
 
+def test_house_plan_parses_reasoning_model_think_block(monkeypatch):
+    """Reasoning-модели (qwen3) выдают <think>…</think> перед JSON, иногда с
+    фигурными скобками внутри. План должен собираться, а не падать в «Ошибка
+    генерации плана»."""
+    import requests as _rq
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            payload = json.dumps(_HOUSE_PROGRAM, ensure_ascii=False)
+            content = ("<think>Прикинем состав: {спальни, кухня}. Площадь ~70 м².\n"
+                       "Сделаю двухэтажный.</think>\n" + payload)
+            return {"choices": [{"message": {"content": content}}]}
+
+    monkeypatch.setattr(_rq, "post", lambda *a, **k: FakeResponse())
+    r = client.post("/api/house/plan", json={
+        "building_kind": "house", "description": "двухэтажный дом", "check_norms": False,
+    })
+    assert r.status_code == 200
+    assert r.json()["raw_program"]["building_program"]["project_name"] == "Дом Тест"
+
+
 def test_house_plan_skips_norms_check_when_disabled(monkeypatch):
     _mock_llm_json(monkeypatch, _HOUSE_PROGRAM)
     r = client.post("/api/house/plan", json={
@@ -123,7 +147,10 @@ def test_house_plan_rejects_too_many_rooms(monkeypatch):
     ]
     _mock_llm_json(monkeypatch, huge)
     r = client.post("/api/house/plan", json={"building_kind": "house", "description": "дом"})
-    assert r.status_code == 500  # _server_error — не проглатывается тихо
+    # инженерный предел — это осмысленная причина (ValueError) → 422 с текстом,
+    # а не безликая 500; главное, что запрос не проглатывается тихо.
+    assert r.status_code == 422
+    assert "помещени" in r.json()["detail"].lower()
 
 
 def test_apartment_plan_generates_two_floors(monkeypatch):

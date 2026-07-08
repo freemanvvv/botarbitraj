@@ -123,12 +123,10 @@ def generate_floorplan_llm(
         except Exception:
             return None
 
-        match = re.search(r'\{[\s\S]*\}', raw)
-        if not match:
-            return None
+        from src.llm_json import extract_json_object
         try:
-            data = json.loads(match.group())
-        except json.JSONDecodeError:
+            data = json.loads(extract_json_object(raw))
+        except (ValueError, json.JSONDecodeError):
             return None
 
         rooms = _rooms_from_llm_json(data.get("rooms", []))

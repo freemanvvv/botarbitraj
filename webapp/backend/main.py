@@ -529,12 +529,9 @@ async def model_analyze_image(
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"]["content"].strip()
 
-        # Извлечь JSON из ответа
-        import re
-        json_match = re.search(r'\{[\s\S]*\}', raw)
-        if not json_match:
-            raise ValueError("LLM не вернул JSON")
-        extracted = json.loads(json_match.group())
+        # Извлечь JSON из ответа (устойчиво к reasoning-моделям с <think>)
+        from src.llm_json import extract_json_object
+        extracted = json.loads(extract_json_object(raw))
 
         # Сформировать params для генерации
         floor_h = float(extracted.get("floor_height", 3.0))
@@ -720,11 +717,9 @@ def _llm_design_apartment_building(requirements: str, model: str, norms_block: s
     resp.raise_for_status()
     raw = resp.json()["choices"][0]["message"]["content"].strip()
 
-    # Извлечь JSON
-    json_match = re.search(r'\{[\s\S]*\}', raw)
-    if not json_match:
-        raise ValueError("LLM не вернул JSON")
-    data = json.loads(json_match.group())
+    # Извлечь JSON (устойчиво к reasoning-моделям с <think>)
+    from src.llm_json import extract_json_object
+    data = json.loads(extract_json_object(raw))
 
     p = data.get("params", {})
     plan = data.get("plan", {})
@@ -957,8 +952,8 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
     теперь модель сначала пробует исправиться целенаправленно; кнопка
     регенерации остаётся для случаев, когда и это не помогло."""
     import requests as req_lib
-    import re
     from src.config import LM_STUDIO_BASE_URL
+    from src.llm_json import extract_json_object
     from src.bim_agents.architect_agent import ARCHITECT_PROMPT
     from src.bim_agents.floorplan_agent import generate_floor_plan
     from src.bim_agents.contracts import BuildingProgram
@@ -1007,17 +1002,20 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
     for attempt in range(max_repair_attempts + 1):
         resp = req_lib.post(
             f"{LM_STUDIO_BASE_URL}/chat/completions",
-            json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": 2000},
-            timeout=120,
+            # 4000 токенов: reasoning-модели (qwen3) тратят часть бюджета на
+            # <think>, и при 2000 JSON программы мог обрезаться.
+            json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": 4000},
+            timeout=180,
         )
         resp.raise_for_status()
         raw = resp.json()["choices"][0]["message"]["content"].strip()
-        json_match = re.search(r'\{[\s\S]*\}', raw)
-        if not json_match:
+        try:
+            data = json.loads(extract_json_object(raw))
+        except (ValueError, json.JSONDecodeError):
             if best is not None:
                 break
-            raise ValueError("LLM не вернул JSON")
-        data = json.loads(json_match.group())
+            raise ValueError("Модель не вернула корректный JSON плана (возможно, "
+                             "выбрана не та модель или ответ обрезан). Попробуйте ещё раз.")
         program = BuildingProgram(**data)
 
         # Инженерные пределы — тот же DoS-паттерн, что и для BuildingParams/
@@ -1120,7 +1118,15 @@ def house_plan_generate(req: HousePlanRequest):
                 req.description, req.model, norms_block, req.check_norms, req.temperature,
             )
             variant_count = 1
+    except ValueError as e:
+        # осмысленные причины (модель вернула не JSON / некорректный состав) —
+        # показываем пользователю, а не глушим общим «Ошибка генерации плана».
+        raise HTTPException(422, str(e)[:400])
     except Exception as e:
+        # ValidationError от pydantic и прочее — короткий класс+сообщение без путей.
+        from pydantic import ValidationError
+        if isinstance(e, ValidationError):
+            raise HTTPException(422, f"Модель вернула некорректный план: {str(e)[:300]}")
         raise _server_error(e, "Ошибка генерации плана")
 
     return {
