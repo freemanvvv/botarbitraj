@@ -229,16 +229,33 @@ def chat_endpoint(req: ChatRequest):
             seen: set[str] = set()
             all_results: list[dict] = []
             for q in queries:
-                for r in rag.search(q, top_k=5):
+                for r in rag.search(q, top_k=8):
                     key = r["text"][:80]
                     if key not in seen:
                         seen.add(key)
                         all_results.append(r)
 
-            # Фильтрация по порогу релевантности (cosine similarity ≥ 0.40)
+            # Гибридный реранк. Эмбеддинги на смешанном рус/узб тексте норм
+            # плохо разделяют близкие темы — cosine у всех ~0.85, и по чистому
+            # скору наверх лезут документы не по теме. Добавляем бонус за
+            # буквальное совпадение слов запроса в названии/тексте, чтобы
+            # профильный документ (напр. по пожарной безопасности) поднимался
+            # выше случайных 0.87.
+            import re as _re
+            qwords = [w for w in _re.findall(r"\w+", req.message.lower()) if len(w) > 3]
+
+            def _kw_bonus(r: dict) -> float:
+                if not qwords:
+                    return 0.0
+                meta = r.get("meta", {})
+                hay = f"{meta.get('title','')} {meta.get('number','')} {r.get('text','')}".lower()
+                return sum(1 for w in qwords if w in hay) / len(qwords)
+
             MIN_SCORE = 0.40
             relevant = [r for r in all_results if r.get("score", 0) >= MIN_SCORE]
-            relevant.sort(key=lambda x: x.get("score", 0), reverse=True)
+            for r in relevant:
+                r["_rank"] = r.get("score", 0) + 0.25 * _kw_bonus(r)
+            relevant.sort(key=lambda x: x["_rank"], reverse=True)
             relevant = relevant[:6]
 
             if relevant:
@@ -246,7 +263,9 @@ def chat_endpoint(req: ChatRequest):
                 for r in relevant:
                     meta = r.get("meta", {})
                     src = f"{meta.get('doc_type','')} {meta.get('number','')} — {meta.get('title','')}"
-                    context += f"[{src}]\n{r['text'][:600]}\n\n"
+                    # Больше текста фрагмента — чтобы модель могла ПЕРЕСКАЗАТЬ
+                    # требования/таблицы, а не отвечать «согласно таблице в документе».
+                    context += f"[{src}]\n{r['text'][:1400]}\n\n"
                 rag_chunks = [
                     {
                         "citation": r.get("citation", ""),
@@ -296,10 +315,15 @@ def chat_endpoint(req: ChatRequest):
         if context and not archive_only:
             sys_prompt = req.system_prompt or (
                 "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
-                "Отвечай ТОЛЬКО на основе приведённых фрагментов нормативов. "
-                "Обязательно ссылайся на документ и пункт. "
-                "Не добавляй информацию из собственных знаний — только то, что есть в контексте. "
-                "Если конкретного ответа в найденных фрагментах нет — прямо скажи об этом."
+                "Отвечай РАЗВЁРНУТО и КОНКРЕТНО, опираясь на приведённые фрагменты нормативов. "
+                "Приводи из фрагментов конкретные требования, числовые значения, определения и "
+                "формулировки — можно дословно цитировать. Если во фрагменте есть таблица, "
+                "перечень или пункт — ПЕРЕСКАЖИ их содержание своими словами, а не пиши "
+                "«согласно таблице в документе». После каждого утверждения указывай источник в "
+                "квадратных скобках: [Тип Номер], например [ШНК 2.01.02-04]. "
+                "Используй только данные из фрагментов, ничего не выдумывай. Если в приведённых "
+                "фрагментах прямого ответа нет — честно скажи об этом и укажи, какие из "
+                "перечисленных документов стоит открыть по теме."
             )
         elif archive_only:
             sys_prompt = (
