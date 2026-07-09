@@ -279,13 +279,19 @@ def chat_endpoint(req: ChatRequest):
                 if not qstems:
                     return 0.0
                 meta = r.get("meta", {})
-                hay = f"{meta.get('title','')} {meta.get('number','')} {r.get('text','')}".lower()
-                return sum(1 for s in qstems if s in hay) / len(qstems)
+                title = f"{meta.get('title','')} {meta.get('number','')}".lower()
+                text = (r.get("text", "") or "").lower()
+                # совпадение стемма в НАЗВАНИИ документа — сильный сигнал темы,
+                # в тексте — слабее. Кап 0.35, чтобы не перебивать большой отрыв
+                # по семантике совсем.
+                title_frac = sum(1 for s in qstems if s in title) / len(qstems)
+                text_frac = sum(1 for s in qstems if s in text) / len(qstems)
+                return min(0.35, 0.6 * title_frac + 0.25 * text_frac)
 
             MIN_SCORE = 0.40
             relevant = [r for r in all_results if r.get("score", 0) >= MIN_SCORE]
             for r in relevant:
-                r["_rank"] = r.get("score", 0) + 0.25 * _kw_bonus(r)
+                r["_rank"] = r.get("score", 0) + _kw_bonus(r)
             relevant.sort(key=lambda x: x["_rank"], reverse=True)
             relevant = relevant[:6]
 
@@ -343,6 +349,7 @@ def chat_endpoint(req: ChatRequest):
                 archive_only = True
 
         # Системный промпт зависит от того, найден ли релевантный контекст
+        needs_clarify = False
         if context and not archive_only:
             sys_prompt = req.system_prompt or (
                 "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
@@ -364,13 +371,29 @@ def chat_endpoint(req: ChatRequest):
                 "открыть во вкладке «Архив». НЕ придумывай содержание пунктов — полного текста "
                 "этих документов у тебя нет."
             )
-        else:
+        elif req.use_rag:
+            # RAG включён, но ничего не нашлось — не тупик «данных нет», а
+            # УТОЧНЯЮЩИЙ вопрос: запрос обычно слишком общий/неоднозначный, и
+            # правильный доп. вопрос помогает переформулировать так, чтобы RAG
+            # нашёл нужный норматив со следующей попытки.
+            needs_clarify = True
             sys_prompt = (
-                "Ты — Construction AI Copilot. "
-                "По данному запросу в базе нормативов Узбекистана не найдено релевантных документов. "
-                "Сообщи пользователю об этом честно. "
-                "Не генерируй ответ из собственных знаний — только скажи, "
-                "что данных в базе нет, и предложи уточнить или переформулировать запрос."
+                "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
+                "По запросу пользователя в базе нормативов не нашлось подходящих документов — "
+                "скорее всего запрос слишком общий или неоднозначный. НЕ выдумывай ответ из "
+                "собственных знаний и НЕ говори просто «данных нет». Вместо этого задай "
+                "пользователю 1–2 КОРОТКИХ дружелюбных уточняющих вопроса, которые помогут "
+                "найти нужный норматив: о каком объекте речь (жилое, общественное, "
+                "промышленное здание или сооружение), какой именно аспект интересует "
+                "(пожарная безопасность, эвакуация, инженерные сети, отделка, основания, "
+                "теплозащита и т.п.) и на каком этапе (проектирование, приёмка). "
+                "Заверши приглашением уточнить запрос."
+            )
+        else:
+            # RAG выключен пользователем — обычный ассистент, без уточнений.
+            sys_prompt = (
+                "Ты — Construction AI Copilot, помощник по строительству и проектированию. "
+                "Отвечай по существу и по делу."
             )
 
         messages = [{"role": "system", "content": sys_prompt}]
@@ -384,6 +407,7 @@ def chat_endpoint(req: ChatRequest):
             "model": req.model,
             "rag_used": bool(context),
             "rag_chunks": rag_chunks,
+            "clarify": needs_clarify,
         }
     except HTTPException:
         raise

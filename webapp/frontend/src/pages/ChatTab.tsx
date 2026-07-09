@@ -13,6 +13,7 @@ interface Message {
   content: string;
   ragChunks?: RagChunk[];
   ragUsed?: boolean;
+  clarify?: boolean;   // бот задаёт уточняющий вопрос (в базе ничего не нашлось)
 }
 
 // В проде фронт отдаётся тем же бэкендом → относительный base (origin
@@ -79,6 +80,7 @@ export default function ChatTab() {
         content: data.response,
         ragChunks: data.rag_chunks ?? [],
         ragUsed: data.rag_used ?? false,
+        clarify: data.clarify ?? false,
       };
       setMessages((prev) => [...prev, botMsg]);
     } catch (e) {
@@ -155,6 +157,10 @@ export default function ChatTab() {
                         ))}
                       </div>
                     </details>
+                  ) : m.clarify ? (
+                    <span style={{ fontSize: "0.75rem", color: "var(--accent)" }}>
+                      🔎 Уточните запрос — помогу найти норматив в базе
+                    </span>
                   ) : m.ragUsed === false && m.ragChunks !== undefined ? (
                     <span style={{ fontSize: "0.75rem", color: "var(--danger)" }}>
                       ⚠️ Релевантных нормативов не найдено в базе
