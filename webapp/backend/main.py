@@ -296,22 +296,52 @@ def chat_endpoint(req: ChatRequest):
             relevant = relevant[:6]
 
             if relevant:
+                # Для КОНТЕКСТА модели — top-8 чанков (богаче ответ). В заголовке
+                # фрагмента даём цитату С НОМЕРОМ СТРАНИЦЫ/ПУНКТА (format_citation:
+                # «ШНК 2.01.02-04, п. 5.2, стр. 12-14»), чтобы модель могла на них
+                # ссылаться.
                 context = "Контекст из нормативных документов Узбекистана:\n\n"
-                for r in relevant:
+                for r in relevant[:8]:
                     meta = r.get("meta", {})
-                    src = f"{meta.get('doc_type','')} {meta.get('number','')} — {meta.get('title','')}"
-                    # Больше текста фрагмента — чтобы модель могла ПЕРЕСКАЗАТЬ
-                    # требования/таблицы, а не отвечать «согласно таблице в документе».
-                    context += f"[{src}]\n{r['text'][:1400]}\n\n"
+                    cite = r.get("citation") or f"{meta.get('doc_type','')} {meta.get('number','')}".strip()
+                    title = meta.get("title", "")
+                    context += f"[{cite} — {title}]\n{r['text'][:1400]}\n\n"
+
+                # Список ИСТОЧНИКОВ — ВСЕ найденные ДОКУМЕНТЫ (дедуп по номеру),
+                # с диапазоном страниц и лучшим скором; показываем все, а не
+                # только первые чанки (у одного документа их бывает несколько).
+                def _page_label(pages: set) -> str:
+                    if not pages:
+                        return ""
+                    lo, hi = min(pages), max(pages)
+                    return f"стр. {lo}" if lo == hi else f"стр. {lo}–{hi}"
+
+                by_doc: dict = {}
+                for r in relevant:
+                    m = r.get("meta", {})
+                    key = f"{m.get('doc_type','')} {m.get('number','')}".strip()
+                    e = by_doc.setdefault(key, {
+                        "doc_type": m.get("doc_type", ""), "number": m.get("number", ""),
+                        "title": m.get("title", ""), "score": 0.0, "rank": 0.0, "pages": set(),
+                    })
+                    # sort по реранку (как контекст), а отображаем сырой косинус
+                    e["rank"] = max(e["rank"], r.get("_rank", r.get("score", 0)))
+                    e["score"] = max(e["score"], r.get("score", 0))
+                    ps, pe = m.get("page_start"), m.get("page_end")
+                    if ps:
+                        try:
+                            for p in range(int(ps), int(pe or ps) + 1):
+                                e["pages"].add(p)
+                        except (TypeError, ValueError):
+                            pass
                 rag_chunks = [
                     {
-                        "citation": r.get("citation", ""),
-                        "score": round(r.get("score", 0), 2),
-                        "doc_type": r.get("meta", {}).get("doc_type", ""),
-                        "number": r.get("meta", {}).get("number", ""),
-                        "title": r.get("meta", {}).get("title", ""),
+                        "citation": f"{e['doc_type']} {e['number']}".strip(),
+                        "score": round(e["score"], 2),
+                        "doc_type": e["doc_type"], "number": e["number"], "title": e["title"],
+                        "pages": _page_label(e["pages"]),
                     }
-                    for r in relevant
+                    for e in sorted(by_doc.values(), key=lambda x: x["rank"], reverse=True)[:15]
                 ]
 
         # Фолбэк на архив: векторный индекс мог не дать совпадений (или он ещё
@@ -345,6 +375,7 @@ def chat_endpoint(req: ChatRequest):
                     "doc_type": h.get("doc_type", ""),
                     "number": h.get("number", ""),
                     "title": h.get("title", ""),
+                    "pages": "",
                 } for h in archive_hits]
                 archive_only = True
 
@@ -353,12 +384,14 @@ def chat_endpoint(req: ChatRequest):
         if context and not archive_only:
             sys_prompt = req.system_prompt or (
                 "Ты — Construction AI Copilot, ассистент по строительным нормам Узбекистана. "
-                "Отвечай РАЗВЁРНУТО и КОНКРЕТНО, опираясь на приведённые фрагменты нормативов. "
-                "Приводи из фрагментов конкретные требования, числовые значения, определения и "
-                "формулировки — можно дословно цитировать. Если во фрагменте есть таблица, "
-                "перечень или пункт — ПЕРЕСКАЖИ их содержание своими словами, а не пиши "
-                "«согласно таблице в документе». После каждого утверждения указывай источник в "
-                "квадратных скобках: [Тип Номер], например [ШНК 2.01.02-04]. "
+                "Отвечай РАЗВЁРНУТО и структурированно (несколько абзацев или список), опираясь "
+                "на приведённые фрагменты нормативов. Разбери вопрос по пунктам, приведи ВСЕ "
+                "относящиеся к нему требования, числовые значения, определения и формулировки — "
+                "можно дословно цитировать. Если во фрагменте есть таблица, перечень или пункт — "
+                "ПЕРЕСКАЖИ их содержание своими словами, а не пиши «согласно таблице в документе». "
+                "После КАЖДОГО утверждения ставь ссылку на источник со страницей/пунктом в "
+                "квадратных скобках ровно как в заголовке фрагмента, например "
+                "[ШНК 2.01.02-04, стр. 12] или [ШНК 2.01.02-04, п. 5.2, стр. 12-14]. "
                 "Используй только данные из фрагментов, ничего не выдумывай. Если в приведённых "
                 "фрагментах прямого ответа нет — честно скажи об этом и укажи, какие из "
                 "перечисленных документов стоит открыть по теме."

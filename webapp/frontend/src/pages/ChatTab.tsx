@@ -6,6 +6,7 @@ interface RagChunk {
   doc_type: string;
   number: string;
   title: string;
+  pages?: string;         // «стр. 12–14» — где в документе найдено
 }
 
 interface Message {
@@ -149,6 +150,7 @@ export default function ChatTab() {
                         {m.ragChunks.map((c, j) => (
                           <div key={j}>
                             <strong>{c.doc_type} {c.number}</strong>
+                            {c.pages ? <span style={{ color: "var(--text3)" }}>{`, ${c.pages}`}</span> : null}
                             {c.title ? ` — ${c.title}` : ""}
                             <span style={{ marginLeft: 6, color: "var(--accent)", fontSize: "0.7rem" }}>
                               {c.score != null ? `${Math.round(c.score * 100)}%` : "из архива"}
