@@ -390,6 +390,29 @@ def test_house_rerender_reflects_edited_geometry(monkeypatch):
     assert max(p[0] for r_ in rt for p in r_["polygon"]) > maxx + 3.9
 
 
+def test_house_dxf_export(monkeypatch):
+    """POST /api/house/dxf отдаёт валидный DXF (кнопка «Скачать DXF»)."""
+    import io
+    import ezdxf
+    _mock_llm_json(monkeypatch, _HOUSE_PROGRAM)
+    gen = client.post("/api/house/plan", json={"building_kind": "house", "description": "дом", "check_norms": False})
+    d = gen.json()
+
+    r = client.post("/api/house/dxf", json={
+        "building_kind": "house", "program": d["raw_program"], "floorplan": d["raw_floorplan"],
+    })
+    assert r.status_code == 200
+    assert r.content[:2] in (b"AC", b"  ") or b"SECTION" in r.content[:2000]  # DXF-заголовок
+    doc = ezdxf.read(io.StringIO(r.content.decode("utf-8", "replace")))
+    kinds = {e.dxftype() for e in doc.modelspace()}
+    assert "DIMENSION" in kinds and "LWPOLYLINE" in kinds
+
+
+def test_house_dxf_rejects_broken_geometry():
+    r = client.post("/api/house/dxf", json={"building_kind": "house", "program": {}, "floorplan": {"storeys": []}})
+    assert r.status_code == 422
+
+
 def test_house_rerender_rejects_broken_geometry():
     # program без ключа building_program → KeyError в эндпоинте → 422,
     # а не 500 (кривой ввод от фронта — это ошибка запроса, не сервера).

@@ -1319,6 +1319,33 @@ def house_plan_rerender(req: HouseRerenderRequest):
     }
 
 
+@app.post("/api/house/dxf")
+def house_plan_dxf(req: HouseRerenderRequest):
+    """Экспорт плана в DXF (САПР): контуры комнат, тела стен, проёмы,
+    редактируемые размерные линии, подписи комнат с площадями и таблица-
+    экспликация. Работает с той же геометрией из альбома (raw_program/
+    raw_floorplan), в т.ч. до сохранения. Только house."""
+    from src.bim_agents.contracts import BuildingProgram, FloorPlan
+    from src.dxf_export import export_floorplan_dxf
+
+    try:
+        program = BuildingProgram(**req.program["building_program"])
+        floor_plan = FloorPlan(**req.floorplan)
+    except Exception as e:
+        raise HTTPException(422, f"Некорректная геометрия плана: {e}")
+
+    try:
+        import uuid
+        out = OUTPUT_DIR / f"plan_{uuid.uuid4().hex[:8]}.dxf"
+        export_floorplan_dxf(program, floor_plan, str(out))
+    except Exception as e:
+        raise _server_error(e, "Ошибка экспорта DXF")
+
+    # ASCII-имя файла: project_name бывает кириллическим, а в HTTP-заголовок
+    # Content-Disposition не-latin1 нельзя.
+    return FileResponse(str(out), media_type="image/vnd.dxf", filename="floorplan.dxf")
+
+
 def _apartment_floorplan_from_dict(d: dict):
     """Обратное к dataclasses.asdict(ApartmentFloorplan) — восстанавливает
     вложенные RoomBox/DoorSpec, а не оставляет их обычными dict'ами."""

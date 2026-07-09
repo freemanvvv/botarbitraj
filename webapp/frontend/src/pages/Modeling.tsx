@@ -68,6 +68,7 @@ export default function Modeling() {
   const [savedPlanId, setSavedPlanId] = useState<number | null>(null);
   const [saveLoading, setSaveLoading] = useState(false);
   const [editing, setEditing] = useState(false);
+  const [dxfLoading, setDxfLoading] = useState(false);
 
   const [build3dLoading, setBuild3dLoading] = useState(false);
   const [build3dError, setBuild3dError] = useState("");
@@ -235,6 +236,35 @@ export default function Modeling() {
     setEditing(false);
     const errCount = res.norms_issues.filter(i => i.severity === "error").length;
     setMessages(prev => [...prev, { role: "bot", content: `✏️ Правки применены. Нарушений норм: ${errCount}. Сохраните проект, чтобы построить 3D.` }]);
+  };
+
+  // Экспорт плана в DXF (САПР): контуры, стены, проёмы, размерные линии,
+  // экспликация. Работает с текущей геометрией альбома (в т.ч. до сохранения).
+  const downloadDxf = async () => {
+    if (!plan) return;
+    setDxfLoading(true);
+    try {
+      const res = await fetch(`${API}/api/house/dxf`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ building_kind: "house", program: plan.raw_program, floorplan: plan.raw_floorplan }),
+      });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        throw new Error(d.detail || "Ошибка экспорта DXF");
+      }
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement("a");
+      a.href = url;
+      a.download = `${(plan.summary || "plan").replace(/[^\w\-.а-яА-Я ]+/g, "_")}.dxf`;
+      document.body.appendChild(a); a.click(); a.remove();
+      URL.revokeObjectURL(url);
+    } catch (e: any) {
+      setMessages(prev => [...prev, { role: "bot", content: `❌ ${e.message}` }]);
+    } finally {
+      setDxfLoading(false);
+    }
   };
 
   const build3d = async () => {
@@ -472,6 +502,11 @@ export default function Modeling() {
                 {plan.building_kind === "house" && (
                   <button className="btn-gen" onClick={() => setEditing(true)} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
                     ✏️ Редактировать
+                  </button>
+                )}
+                {plan.building_kind === "house" && (
+                  <button className="btn-gen" onClick={downloadDxf} disabled={planLoading || dxfLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
+                    {dxfLoading ? "⏳..." : "📐 Скачать DXF"}
                   </button>
                 )}
                 <button className="btn-gen" onClick={regenerate} disabled={planLoading} style={{ background: "var(--bg3)", color: "var(--text)" }}>
