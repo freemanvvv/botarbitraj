@@ -22,7 +22,10 @@ interface Group {
 // запросы («Failed to fetch»). В dev (vite :5173) — абсолютный адрес.
 const API = import.meta.env.DEV ? "http://localhost:8765" : "";
 
-export default function Archive() {
+export default function Archive({ openTarget, onTargetConsumed }: {
+  openTarget?: string | null;
+  onTargetConsumed?: () => void;
+} = {}) {
   const [groups, setGroups] = useState<Group[]>([]);
   const [docs, setDocs] = useState<Doc[]>([]);
   const [total, setTotal] = useState(0);
@@ -77,6 +80,31 @@ export default function Archive() {
     const data = await res.json();
     setDetail({ ...data.doc, text_preview: data.text_preview, chunks: data.chunks });
   };
+
+  // Переход из чата: пришёл номер документа — ищем по нему и, когда документ
+  // подгрузится в списке, открываем его карточку.
+  const [pendingOpen, setPendingOpen] = useState<string | null>(null);
+  useEffect(() => {
+    if (openTarget) { setSearchInput(openTarget); setPendingOpen(openTarget); }
+  }, [openTarget]);
+  useEffect(() => {
+    if (!pendingOpen) return;
+    // ждём, пока применится именно НАШ фильтр (search==target) и подгрузятся
+    // документы — иначе стартовый (нефильтрованный) список «съедал» цель.
+    if (search !== pendingOpen || docs.length === 0) return;
+    const norm = (s: string) => (s || "").replace(/\s+/g, "").toLowerCase();
+    const hit = docs.find(
+      (d) => norm(d.number) === norm(pendingOpen) || norm(`${d.doc_type} ${d.number}`) === norm(pendingOpen)
+    );
+    // Консьюмим цель ТОЛЬКО когда документ реально найден — иначе эффект,
+    // сработавший на устаревшем (нефильтрованном) списке, «съедал» цель до
+    // прихода отфильтрованных результатов, и карточка не открывалась.
+    if (hit) {
+      openDetail(hit.id);
+      setPendingOpen(null);
+      onTargetConsumed?.();
+    }
+  }, [docs, pendingOpen, search]);
 
   return (
     <div>

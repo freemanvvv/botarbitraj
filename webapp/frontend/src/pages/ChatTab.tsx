@@ -22,7 +22,7 @@ interface Message {
 // запросы («Failed to fetch»). В dev (vite :5173) — абсолютный адрес.
 const API = import.meta.env.DEV ? "http://localhost:8765" : "";
 
-export default function ChatTab() {
+export default function ChatTab({ onOpenSource }: { onOpenSource?: (num: string) => void } = {}) {
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       const saved = localStorage.getItem('copilot_chat_messages');
@@ -148,13 +148,21 @@ export default function ChatTab() {
                       </summary>
                       <div style={{ paddingLeft: 12, paddingTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
                         {m.ragChunks.map((c, j) => (
-                          <div key={j}>
+                          <div
+                            key={j}
+                            onClick={() => c.number && onOpenSource?.(c.number)}
+                            title="Открыть документ в Архиве"
+                            style={{ cursor: onOpenSource && c.number ? "pointer" : "default" }}
+                            onMouseEnter={(e) => { if (onOpenSource && c.number) e.currentTarget.style.textDecoration = "underline"; }}
+                            onMouseLeave={(e) => { e.currentTarget.style.textDecoration = "none"; }}
+                          >
                             <strong>{c.doc_type} {c.number}</strong>
                             {c.pages ? <span style={{ color: "var(--text3)" }}>{`, ${c.pages}`}</span> : null}
                             {c.title ? ` — ${c.title}` : ""}
                             <span style={{ marginLeft: 6, color: "var(--accent)", fontSize: "0.7rem" }}>
                               {c.score != null ? `${Math.round(c.score * 100)}%` : "из архива"}
                             </span>
+                            {onOpenSource && c.number ? <span style={{ marginLeft: 4, fontSize: "0.7rem", color: "var(--accent)" }}>↗</span> : null}
                           </div>
                         ))}
                       </div>
