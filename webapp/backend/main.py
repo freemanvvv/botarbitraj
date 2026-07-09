@@ -202,9 +202,22 @@ def chat_endpoint(req: ChatRequest):
         if req.use_rag:
             rag = NormbaseRAG()
 
-            # Query expansion: 2 доп. подзапроса через LLM → лучший recall
+            # Query expansion: 2 доп. подзапроса через LLM → лучший recall.
+            # ВАЖНО: reasoning-модели (qwen3) выдают <think>…</think>; без его
+            # вырезания в подзапросы попадали фрагменты рассуждений, и поиск
+            # тащил случайные документы (аэродромы, канализация на вопрос про
+            # пожарные датчики). Вырезаем think и берём только короткие
+            # фразы-запросы (2-6 слов), не предложения.
+            import re as _re
+            # Стеммы запроса (первые 6 букв слова) — чтобы матчить с учётом
+            # русской морфологии: «пожарные» (запрос) ↔ «пожарная» (в нормах)
+            # по общему стемму «пожарн». Используются и для реранка, и для
+            # нацеливания на документы по названию.
+            qstems = [w[:6] for w in _re.findall(r"\w+", req.message.lower()) if len(w) > 3]
+
             queries = [req.message]
             try:
+                from src.llm_json import strip_think
                 exp_prompt = (
                     "Сгенерируй 2 коротких поисковых запроса (2-5 слов каждый) "
                     "для поиска в базе строительных нормативов Узбекистана по вопросу:\n"
@@ -215,15 +228,37 @@ def chat_endpoint(req: ChatRequest):
                     req.model,
                     [{"role": "user", "content": exp_prompt}],
                     stream=False,
-                    max_tokens=80,
+                    max_tokens=300,  # запас на <think> у reasoning-моделей
                 )
-                for line in expansion.strip().split("\n"):
-                    line = line.strip().lstrip("-*•1234567890. \"'")
-                    if line and len(line) > 3:
+                for line in strip_think(expansion).split("\n"):
+                    line = line.strip().lstrip("-*•1234567890. \"'").strip()
+                    if 3 < len(line) <= 60 and 1 <= len(line.split()) <= 6:
                         queries.append(line)
                 queries = queries[:4]
             except Exception:
                 pass  # fallback — только оригинальный запрос
+
+            # Нацеливание на профильные документы: если стеммы запроса есть в
+            # НАЗВАНИИ документа архива — добавляем это название как подзапрос,
+            # чтобы гарантированно поднять его чанки (слабые эмбеддинги на
+            # OCR-тексте иначе могут не втянуть нужный документ вовсе — recall).
+            if qstems:
+                try:
+                    import csv as _csv
+                    titles: list[tuple[int, str]] = []
+                    with open(SOURCES_CSV, newline="", encoding="utf-8") as _f:
+                        for row in _csv.DictReader(_f):
+                            title = (row.get("title") or "").strip()
+                            tl = title.lower()
+                            hits = sum(1 for s in qstems if s in tl)
+                            if title and hits:
+                                titles.append((hits, title.strip("/").strip()[:60]))
+                    titles.sort(key=lambda t: t[0], reverse=True)
+                    for _hits, t in titles[:2]:
+                        if t not in queries:
+                            queries.append(t)
+                except Exception:
+                    pass
 
             # Поиск по всем подзапросам с дедупликацией
             seen: set[str] = set()
@@ -238,18 +273,14 @@ def chat_endpoint(req: ChatRequest):
             # Гибридный реранк. Эмбеддинги на смешанном рус/узб тексте норм
             # плохо разделяют близкие темы — cosine у всех ~0.85, и по чистому
             # скору наверх лезут документы не по теме. Добавляем бонус за
-            # буквальное совпадение слов запроса в названии/тексте, чтобы
-            # профильный документ (напр. по пожарной безопасности) поднимался
-            # выше случайных 0.87.
-            import re as _re
-            qwords = [w for w in _re.findall(r"\w+", req.message.lower()) if len(w) > 3]
-
+            # совпадение стеммов запроса в названии/тексте (морфология: «пожарные»
+            # ↔ «пожарная»), чтобы профильный документ поднимался выше случайных.
             def _kw_bonus(r: dict) -> float:
-                if not qwords:
+                if not qstems:
                     return 0.0
                 meta = r.get("meta", {})
                 hay = f"{meta.get('title','')} {meta.get('number','')} {r.get('text','')}".lower()
-                return sum(1 for w in qwords if w in hay) / len(qwords)
+                return sum(1 for s in qstems if s in hay) / len(qstems)
 
             MIN_SCORE = 0.40
             relevant = [r for r in all_results if r.get("score", 0) >= MIN_SCORE]

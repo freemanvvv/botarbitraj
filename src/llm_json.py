@@ -12,6 +12,18 @@ import re
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
 
 
+def strip_think(raw: str) -> str:
+    """Убирает блоки рассуждений <think>…</think> из ответа reasoning-модели.
+    Если тег открыт, но не закрыт (модель не успела) — отбрасывает всё после
+    открытия. Для случаев, где нужен просто текст ответа без JSON."""
+    if not raw:
+        return ""
+    text = _THINK_RE.sub("", raw)
+    if "<think>" in text and "</think>" not in text:
+        text = text.split("<think>", 1)[0]
+    return text.replace("</think>", "").strip()
+
+
 def extract_json_object(raw: str) -> str:
     """Возвращает строку первого валидного JSON-объекта из ответа модели.
     Бросает ValueError с понятным текстом, если объекта нет."""

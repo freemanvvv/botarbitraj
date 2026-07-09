@@ -45,3 +45,16 @@ def test_truncated_object_raises():
     # обрезано по лимиту токенов — нет закрывающей скобки
     with pytest.raises(ValueError):
         extract_json_object('{"project_name": "Дом", "rooms": [{"id": "a"')
+
+
+def test_strip_think_removes_reasoning():
+    from src.llm_json import strip_think
+    raw = "<think>подумаю про запросы</think>\nпожарная сигнализация\nизвещатели"
+    out = strip_think(raw)
+    assert "think" not in out
+    assert "пожарная сигнализация" in out and "подумаю" not in out
+
+
+def test_strip_think_unclosed():
+    from src.llm_json import strip_think
+    assert strip_think("текст до <think>бесконечные рассуждения") == "текст до"
