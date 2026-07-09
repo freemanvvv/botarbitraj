@@ -423,18 +423,20 @@ FPS извлечения: {fps}
         _run(job, fe_cmd)
         job["progress"] = 35
 
-        # Матчинг. Для облёта/орбиты (дрон вокруг объекта) и вообще при
-        # небольшом числе кадров надёжнее EXHAUSTIVE (все пары): sequential
-        # матчит только соседние по времени кадры и не связывает противоположные
-        # стороны круга и не замыкает петлю облёта — из-за этого mapper не
-        # находит хорошую стартовую пару и регистрирует единицы кадров. При
-        # <=250 кадрах exhaustive (O(n²)) дёшев; для длинных проездов оставляем
-        # sequential.
-        if frame_count <= 250:
-            job["logs"].append(f"[{_ts()}] [COLMAP] exhaustive_matcher (облёт/мало кадров, {frame_count})...")
+        # Матчинг. Для облёта/орбиты (дрон вокруг объекта) надёжнее EXHAUSTIVE
+        # (все пары): sequential матчит только соседние по времени кадры и не
+        # связывает противоположные стороны круга — из-за этого mapper не
+        # находит стартовую пару и регистрирует единицы кадров. Порог 600:
+        # exhaustive это O(n²), но для типичного облёта (150–400 кадров) он и
+        # быстр, и обязателен. Раньше порог был 250 — при дефолтном FPS=4 ролик
+        # ~1 мин давал 253 кадра и сваливался в sequential → «3/253».
+        EXHAUSTIVE_MAX = 600
+        used_exhaustive = frame_count <= EXHAUSTIVE_MAX
+        if used_exhaustive:
+            job["logs"].append(f"[{_ts()}] [COLMAP] exhaustive_matcher (облёт, {frame_count} кадров)...")
             _run(job, ["colmap", "exhaustive_matcher", "--database_path", db])
         else:
-            job["logs"].append(f"[{_ts()}] [COLMAP] sequential_matcher ({frame_count} кадров)...")
+            job["logs"].append(f"[{_ts()}] [COLMAP] sequential_matcher ({frame_count} кадров, >{EXHAUSTIVE_MAX})...")
             _run(job, [
                 "colmap", "sequential_matcher",
                 "--database_path", db,
@@ -485,14 +487,19 @@ FPS извлечения: {fps}
         job["logs"].append(f"COLMAP: зарегистрировано {registered}/{frame_count} кадров ({pct}%)")
 
         if registered < 5:
+            matcher = "exhaustive (все пары)" if used_exhaustive else f"sequential (>{EXHAUSTIVE_MAX} кадров)"
+            seq_note = ("" if used_exhaustive else
+                        f"Кадров много (>{EXHAUSTIVE_MAX}) → включён sequential; уменьшите длину/FPS "
+                        f"до ≤{EXHAUSTIVE_MAX} кадров, чтобы сработал exhaustive. ")
             raise RuntimeError(
-                f"COLMAP зарегистрировал только {registered} из {frame_count} кадров ({pct}%). "
-                f"Частая причина при облёте — кадров МАЛО ({frame_count}) или между ними "
-                "слишком большой поворот. Что помогает: 1) поднять FPS извлечения, чтобы "
-                "было хотя бы 150–300 кадров (плавное перекрытие соседних кадров ~70%); "
-                "2) снимать плавно, без смазов; 3) чтобы в кадре были детали/объекты, "
-                "а не только небо/вода/однотонная поверхность. Матчинг уже exhaustive "
-                "(все пары), так что дело именно в плотности/качестве кадров."
+                f"COLMAP связал только {registered} из {frame_count} кадров ({pct}%). "
+                f"Матчинг: {matcher}. Обычно причина в САМОМ видео, а не в настройках: "
+                "1) съёмка С БОЛЬШОЙ ВЫСОТЫ / обзорный пролёт района — параллакс между "
+                "кадрами слишком мал, COLMAP не может вычислить глубину (нужен БЛИЗКИЙ "
+                "облёт ОДНОГО объекта, не всего района); 2) смазанные/резко меняющиеся "
+                "кадры; 3) однотонные поверхности (небо, вода, стекло, снег) без деталей. "
+                + seq_note +
+                "Сними плавный круг НИЗКО вокруг одного здания, держа его в центре, — тогда свяжется."
             )
 
         # LLM: анализ COLMAP
