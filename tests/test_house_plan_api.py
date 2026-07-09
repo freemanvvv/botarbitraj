@@ -130,6 +130,26 @@ def test_house_plan_parses_reasoning_model_think_block(monkeypatch):
     assert r.json()["raw_program"]["building_program"]["project_name"] == "Дом Тест"
 
 
+def test_house_plan_truncated_response_gives_clear_error(monkeypatch):
+    """Ответ оборвался по лимиту токенов (finish_reason=length, JSON неполный) →
+    внятная 422 про обрыв, а не безликая ошибка."""
+    import requests as _rq
+
+    class FakeResponse:
+        def raise_for_status(self):
+            pass
+
+        def json(self):
+            # неполный JSON + finish_reason=length
+            return {"choices": [{"finish_reason": "length",
+                                 "message": {"content": '{"project_name": "Дом", "rooms": [{"id": "a"'}}]}
+
+    monkeypatch.setattr(_rq, "post", lambda *a, **k: FakeResponse())
+    r = client.post("/api/house/plan", json={"building_kind": "house", "description": "дом", "check_norms": False})
+    assert r.status_code == 422
+    assert "лимит" in r.json()["detail"].lower() or "оборвал" in r.json()["detail"].lower()
+
+
 def test_house_plan_skips_norms_check_when_disabled(monkeypatch):
     _mock_llm_json(monkeypatch, _HOUSE_PROGRAM)
     r = client.post("/api/house/plan", json={

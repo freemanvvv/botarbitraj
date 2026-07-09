@@ -1097,10 +1097,19 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
 
     system_prompt = ARCHITECT_PROMPT
     if norms_block:
+        # Кап норм-блока: с 93k-индексом контекст мог раздуться и провоцировать
+        # модель на длинные рассуждения → обрыв JSON по лимиту токенов.
         system_prompt += (
             "\n\nДЕЙСТВУЮЩИЕ СТРОИТЕЛЬНЫЕ НОРМЫ (КМК/ШНК) — учитывай при площадях "
-            f"и составе помещений:\n{norms_block}"
+            f"и составе помещений:\n{norms_block[:2500]}"
         )
+    # Гасим «размышления» reasoning-моделей (qwen3): для структурированного JSON
+    # они не нужны, но съедают токен-бюджет и обрывают ответ на полуслове.
+    # /no_think — команда qwen3; текстовая инструкция страхует прочие модели.
+    system_prompt += (
+        "\n\nВыведи ТОЛЬКО итоговый JSON объекта BuildingProgram — без рассуждений, "
+        "без пояснений, без markdown-обёрток. /no_think"
+    )
 
     messages = [
         {"role": "system", "content": system_prompt},
@@ -1112,20 +1121,25 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
     for attempt in range(max_repair_attempts + 1):
         resp = req_lib.post(
             f"{LM_STUDIO_BASE_URL}/chat/completions",
-            # 4000 токенов: reasoning-модели (qwen3) тратят часть бюджета на
-            # <think>, и при 2000 JSON программы мог обрезаться.
-            json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": 4000},
-            timeout=180,
+            # 8000 токенов + /no_think в промпте: с большим норм-контекстом и
+            # reasoning-моделью 4000 не хватало и JSON обрывался на полуслове.
+            json={"model": model, "messages": messages, "temperature": temperature, "max_tokens": 8000},
+            timeout=240,
         )
         resp.raise_for_status()
-        raw = resp.json()["choices"][0]["message"]["content"].strip()
+        choice = resp.json()["choices"][0]
+        raw = (choice.get("message", {}).get("content") or "").strip()
         try:
             data = json.loads(extract_json_object(raw))
         except (ValueError, json.JSONDecodeError):
             if best is not None:
                 break
-            raise ValueError("Модель не вернула корректный JSON плана (возможно, "
-                             "выбрана не та модель или ответ обрезан). Попробуйте ещё раз.")
+            cut = choice.get("finish_reason") == "length"
+            raise ValueError(
+                "Ответ модели оборвался по лимиту токенов — JSON плана неполный. "
+                "Попробуйте ещё раз или упростите описание." if cut else
+                "Модель не вернула корректный JSON плана (возможно, выбрана не та "
+                "модель или включены длинные рассуждения). Попробуйте ещё раз.")
         program = BuildingProgram(**data)
 
         # Инженерные пределы — тот же DoS-паттерн, что и для BuildingParams/
