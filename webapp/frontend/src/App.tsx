@@ -65,8 +65,8 @@ const TABS: { key: Tab; label: string; Icon: () => JSX.Element }[] = [
 
 export default function App() {
   const [activeTab, setActiveTab] = useState<Tab>("archive");
-  // Документ, который надо открыть в Архиве по клику на источник в чате.
-  const [archiveTarget, setArchiveTarget] = useState<string | null>(null);
+  // Документ (+ страница), который надо открыть в Архиве по клику на источник в чате.
+  const [archiveTarget, setArchiveTarget] = useState<{ number: string; page?: number } | null>(null);
 
   return (
     <div className="app-container">
@@ -89,7 +89,7 @@ export default function App() {
       </header>
       <main className="app-main">
         {activeTab === "archive"  && <Archive openTarget={archiveTarget} onTargetConsumed={() => setArchiveTarget(null)} />}
-        {activeTab === "chat"     && <ChatTab onOpenSource={(num) => { setArchiveTarget(num); setActiveTab("archive"); }} />}
+        {activeTab === "chat"     && <ChatTab onOpenSource={(num, page) => { setArchiveTarget({ number: num, page }); setActiveTab("archive"); }} />}
         {activeTab === "modeling" && <Modeling />}
         {activeTab === "estimate" && <Estimate />}
         {activeTab === "gsplat"   && <GsplatTab />}

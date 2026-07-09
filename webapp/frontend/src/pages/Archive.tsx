@@ -23,7 +23,7 @@ interface Group {
 const API = import.meta.env.DEV ? "http://localhost:8765" : "";
 
 export default function Archive({ openTarget, onTargetConsumed }: {
-  openTarget?: string | null;
+  openTarget?: { number: string; page?: number } | null;
   onTargetConsumed?: () => void;
 } = {}) {
   const [groups, setGroups] = useState<Group[]>([]);
@@ -36,7 +36,8 @@ export default function Archive({ openTarget, onTargetConsumed }: {
   const [searchInput, setSearchInput] = useState("");
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(false);
-  const [detail, setDetail] = useState<Doc & { text_preview: string; chunks: number } | null>(null);
+  const [detail, setDetail] = useState<Doc & { text_preview: string; chunks: number; pdf_available?: boolean; local_kind?: string } | null>(null);
+  const [targetPage, setTargetPage] = useState<number | null>(null);   // страница из цитаты чата
   const [viewMode, setViewMode] = useState<"grid" | "list">("grid");
 
   useEffect(() => {
@@ -78,14 +79,19 @@ export default function Archive({ openTarget, onTargetConsumed }: {
   const openDetail = async (docId: string) => {
     const res = await fetch(`${API}/api/archive/doc/${docId}`);
     const data = await res.json();
-    setDetail({ ...data.doc, text_preview: data.text_preview, chunks: data.chunks });
+    setDetail({ ...data.doc, text_preview: data.text_preview, chunks: data.chunks,
+                pdf_available: data.pdf_available, local_kind: data.local_kind });
   };
 
   // Переход из чата: пришёл номер документа — ищем по нему и, когда документ
   // подгрузится в списке, открываем его карточку.
   const [pendingOpen, setPendingOpen] = useState<string | null>(null);
   useEffect(() => {
-    if (openTarget) { setSearchInput(openTarget); setPendingOpen(openTarget); }
+    if (openTarget) {
+      setSearchInput(openTarget.number);
+      setPendingOpen(openTarget.number);
+      setTargetPage(openTarget.page ?? null);
+    }
   }, [openTarget]);
   useEffect(() => {
     if (!pendingOpen) return;
@@ -148,7 +154,7 @@ export default function Archive({ openTarget, onTargetConsumed }: {
         <>
           <div className={viewMode === "grid" ? "card-grid" : ""} style={viewMode === "list" ? { display: "flex", flexDirection: "column", gap: 6 } : {}}>
             {docs.map((doc) => (
-              <div key={doc.id} className={viewMode === "grid" ? "card" : "card"} style={viewMode === "list" ? { display: "flex", alignItems: "center", gap: 12, padding: 10 } : {}} onClick={() => openDetail(doc.id)}>
+              <div key={doc.id} className={viewMode === "grid" ? "card" : "card"} style={viewMode === "list" ? { display: "flex", alignItems: "center", gap: 12, padding: 10 } : {}} onClick={() => { setTargetPage(null); openDetail(doc.id); }}>
                 <div>
                   <div className="card-title">{doc.doc_type} {doc.number}</div>
                   <div className="card-subtitle">{doc.title}</div>
@@ -201,13 +207,18 @@ export default function Archive({ openTarget, onTargetConsumed }: {
                 ))}
               </tbody>
             </table>
-            {detail.source_url && (
-              <p style={{ marginTop: 8 }}>
-                <a href={detail.source_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
-                  🔗 Открыть источник
+            <p style={{ marginTop: 8, display: "flex", gap: 16, flexWrap: "wrap" }}>
+              {detail.pdf_available && (
+                <a href={`${API}/api/archive/pdf/${detail.id}#page=${targetPage || 1}`} target="_blank" rel="noreferrer" style={{ color: "var(--accent)", fontWeight: 600 }}>
+                  📄 Открыть PDF{targetPage ? `, стр. ${targetPage}` : ""}
                 </a>
-              </p>
-            )}
+              )}
+              {detail.source_url && (
+                <a href={detail.source_url} target="_blank" rel="noreferrer" style={{ color: "var(--accent)" }}>
+                  🔗 Открыть источник (сайт)
+                </a>
+              )}
+            </p>
             {detail.text_preview && (
               <details style={{ marginTop: 12 }} open>
                 <summary style={{ cursor: "pointer", color: "var(--accent)", marginBottom: 8 }}>Текст норматива</summary>

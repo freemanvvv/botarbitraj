@@ -163,12 +163,34 @@ def archive_doc_detail(doc_id: str):
     except Exception:
         pass
 
+    # Локально скачанный при индексации файл (RAW_DIR/{id}.pdf|.html) — можно
+    # открыть прямо во вьюере браузера, в т.ч. на нужной странице (#page=N).
+    html_path = DATA_DIR / "normbase_raw" / f"{doc_id}.html"
+    pdf_available = raw_path.exists()
     return {
         "doc": doc,
         "text_preview": text[:3000],
         "chunks": len(chunk_ids),
         "has_text": bool(text),
+        "pdf_available": pdf_available,
+        "local_kind": "pdf" if pdf_available else ("html" if html_path.exists() else None),
     }
+
+
+@app.get("/api/archive/pdf/{doc_id}")
+def archive_pdf(doc_id: str):
+    """Отдаёт локально скачанный при индексации файл документа (PDF/HTML) —
+    inline, чтобы открывался во встроенном вьюере браузера. Позволяет ссылке
+    из чата вести прямо в документ (и на страницу через #page=N)."""
+    raw_dir = (DATA_DIR / "normbase_raw").resolve()
+    for ext, media in ((".pdf", "application/pdf"), (".html", "text/html")):
+        path = (raw_dir / f"{doc_id}{ext}").resolve()
+        # защита от path traversal: файл обязан лежать внутри raw_dir
+        if str(path).startswith(str(raw_dir)) and path.exists():
+            # content_disposition_type="inline" → открывается во вьюере браузера;
+            # без filename (id кириллический, а в HTTP-заголовок нельзя не-latin1).
+            return FileResponse(str(path), media_type=media, content_disposition_type="inline")
+    raise HTTPException(404, "Локальный файл документа не найден (не скачан при индексации)")
 
 
 # ═══════════════════════════════════════════

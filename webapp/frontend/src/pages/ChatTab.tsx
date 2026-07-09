@@ -22,7 +22,12 @@ interface Message {
 // запросы («Failed to fetch»). В dev (vite :5173) — абсолютный адрес.
 const API = import.meta.env.DEV ? "http://localhost:8765" : "";
 
-export default function ChatTab({ onOpenSource }: { onOpenSource?: (num: string) => void } = {}) {
+export default function ChatTab({ onOpenSource }: { onOpenSource?: (num: string, page?: number) => void } = {}) {
+  // «стр. 12–14» → 12 (первая страница диапазона), для перехода в PDF.
+  const parsePage = (pages?: string): number | undefined => {
+    const m = (pages || "").match(/\d+/);
+    return m ? Number(m[0]) : undefined;
+  };
   const [messages, setMessages] = useState<Message[]>(() => {
     try {
       const saved = localStorage.getItem('copilot_chat_messages');
@@ -150,7 +155,7 @@ export default function ChatTab({ onOpenSource }: { onOpenSource?: (num: string)
                         {m.ragChunks.map((c, j) => (
                           <div
                             key={j}
-                            onClick={() => c.number && onOpenSource?.(c.number)}
+                            onClick={() => c.number && onOpenSource?.(c.number, parsePage(c.pages))}
                             title="Открыть документ в Архиве"
                             style={{ cursor: onOpenSource && c.number ? "pointer" : "default" }}
                             onMouseEnter={(e) => { if (onOpenSource && c.number) e.currentTarget.style.textDecoration = "underline"; }}
