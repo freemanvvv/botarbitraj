@@ -1043,10 +1043,26 @@ class HouseRerenderRequest(BaseModel):
     floorplan: dict
 
 
+class HouseFixNormsRequest(BaseModel):
+    """«Исправить по нормам»: берём уже сгенерированный BuildingProgram (raw_program
+    из ответа /api/house/plan), поднимаем площади/ширины комнат до нормативных
+    минимумов и увеличиваем footprint, затем перегенерируем план (без LLM)."""
+    program: dict
+    check_norms: bool = True
+    variant: int = Field(0, ge=0, le=1000)
+
+
 def _bbox_area(polygon: list) -> float:
     xs = [p[0] for p in polygon]
     ys = [p[1] for p in polygon]
     return (max(xs) - min(xs)) * (max(ys) - min(ys))
+
+
+def _floor_label(level: int) -> str:
+    """Подпись этажа для альбома. Нумерация с 1: наземный этаж — «1-й этаж»
+    (level 0). Этаж 0 в быту = подвал/цоколь, поэтому «Этаж 0» вводил в
+    заблуждение — по замечанию пользователя нумеруем с первого."""
+    return f"{level + 1}-й этаж"
 
 
 def _generate_house_plan(description: str, model: str, norms_block: str, check_norms: bool, temperature: float,
@@ -1078,8 +1094,8 @@ def _generate_house_plan(description: str, model: str, norms_block: str, check_n
             area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
             floors.append({
                 "level": storey.level,
-                "label": f"Этаж {storey.level}",
-                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "label": _floor_label(storey.level),
+                "svg": render_storey_svg(program, storey, _floor_label(storey.level)),
                 "area_m2": round(area, 1),
             })
         return floors
@@ -1268,6 +1284,43 @@ def house_plan_generate(req: HousePlanRequest):
     }
 
 
+@app.post("/api/house/fix-norms")
+def house_plan_fix_norms(req: HouseFixNormsRequest):
+    """Целенаправленно чинит нарушения норм: правит состав/площади программы
+    под минимумы КМК/ШНК и перегенерирует план (LLM не вызывается — работаем
+    с уже готовым BuildingProgram). Ответ той же формы, что /api/house/plan."""
+    from src.bim_agents.contracts import BuildingProgram
+    from src.house_norms import snap_program_to_norms
+
+    try:
+        program = BuildingProgram(**req.program["building_program"])
+    except Exception as e:
+        raise HTTPException(422, f"Некорректная программа плана: {str(e)[:300]}")
+
+    fixed = snap_program_to_norms(program)
+    reuse = {"building_program": fixed.model_dump()}
+
+    try:
+        floors, norms_issues, raw_program, raw_floorplan, summary, variant_count = _generate_house_plan(
+            "", "local-model", "", req.check_norms, 0.0,
+            variant=req.variant, reuse_program=reuse,
+        )
+    except Exception as e:
+        raise _server_error(e, "Ошибка исправления плана по нормам")
+
+    return {
+        "building_kind": "house",
+        "summary": summary,
+        "floors": floors,
+        "norms_issues": norms_issues,
+        "norms_citations": "",
+        "raw_program": raw_program,
+        "raw_floorplan": raw_floorplan,
+        "variant": req.variant % variant_count if variant_count else 0,
+        "variant_count": variant_count,
+    }
+
+
 @app.post("/api/house/save")
 def house_plan_save(req: HousePlanSaveRequest):
     """Сохраняет черновик плана (после «мне нравится этот вариант»)."""
@@ -1303,8 +1356,8 @@ def house_plan_rerender(req: HouseRerenderRequest):
             area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
             floors.append({
                 "level": storey.level,
-                "label": f"Этаж {storey.level}",
-                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "label": _floor_label(storey.level),
+                "svg": render_storey_svg(program, storey, _floor_label(storey.level)),
                 "area_m2": round(area, 1),
             })
         norms_issues = validate_house_plan(program, floor_plan) if req.check_norms else []
@@ -1374,8 +1427,8 @@ def _rerender_saved_plan(plan: dict) -> dict:
             area = sum(_bbox_area(rp.polygon) for rp in storey.rooms if rp.polygon)
             floors.append({
                 "level": storey.level,
-                "label": f"Этаж {storey.level}",
-                "svg": render_storey_svg(program, storey, f"Этаж {storey.level}"),
+                "label": _floor_label(storey.level),
+                "svg": render_storey_svg(program, storey, _floor_label(storey.level)),
                 "area_m2": round(area, 1),
             })
     else:

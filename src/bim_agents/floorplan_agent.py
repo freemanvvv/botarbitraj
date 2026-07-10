@@ -29,7 +29,7 @@ import math
 import os
 
 from .contracts import BuildingProgram, FloorPlan, RoomPlan, WallPlan, OpeningPlan, StoreyPlan, StairPlan
-from .layout_templates import match_template, apply_template
+from .layout_templates import match_template, match_templates, apply_template, _is_polygon_template
 
 _DATASET_PATH = os.path.join(os.path.dirname(__file__), "house_layout_dataset.json")
 with open(_DATASET_PATH, encoding="utf-8") as _f:
@@ -334,6 +334,28 @@ def _place_openings(walls: list[WallPlan], owners: dict, polygons: dict,
     return openings
 
 
+def _normalize_footprint(polygons: dict, bw: float, bd: float) -> None:
+    """Ин-плейс масштабирует полигоны этажа так, чтобы их общий bbox стал
+    ровно [0,bw]×[0,bd] — тогда ВСЕ этажи имеют одинаковый внешний контур и
+    размеры (стены стыкуются по этажам). Без этого этаж на polygon-шаблоне и
+    этаж на зонированном солвере получают РАЗНЫЕ габариты (см. жалобу: «формы
+    здания не совпадают, а значит и размеры»), т.к. polygon-шаблон
+    пересчитывает fw/fd под свой aspect."""
+    if not polygons:
+        return
+    xs = [p[0] for poly in polygons.values() for p in poly]
+    ys = [p[1] for poly in polygons.values() for p in poly]
+    minx, maxx, miny, maxy = min(xs), max(xs), min(ys), max(ys)
+    spanx, spany = maxx - minx, maxy - miny
+    if spanx <= 1e-9 or spany <= 1e-9:
+        return
+    sx, sy = bw / spanx, bd / spany
+    for poly in polygons.values():
+        for pt in poly:
+            pt[0] = round((pt[0] - minx) * sx, 4)
+            pt[1] = round((pt[1] - miny) * sy, 4)
+
+
 # ─────────────────────────────── основной вход ──────────────────────────────
 
 def count_template_variants(program: BuildingProgram, limit: int = 10) -> int:
@@ -363,6 +385,12 @@ def generate_floor_plan(program: BuildingProgram, variant: int = 0) -> FloorPlan
     fw = program.footprint["width_m"]
     fd = program.footprint["depth_m"]
     storeys_data = []
+    # Многоэтажный дом: у всех этажей ОДИН внешний контур (стены стыкуются по
+    # вертикали). polygon-шаблоны дают реальную, но каждый свою форму (Г-образную
+    # и т.п.) со своим aspect → на разных этажах разные габариты. Поэтому для
+    # >1 этажа берём только заполняющие прямоугольник шаблоны (не polygon), а
+    # итог дополнительно нормируем к одному bbox.
+    multi = program.storeys > 1
 
     for level in range(program.storeys):
         elevation = level * program.ceiling_height_m
@@ -372,9 +400,16 @@ def generate_floor_plan(program: BuildingProgram, variant: int = 0) -> FloorPlan
             continue
 
         metas = [(r, classify_room(r.type, r.name)) for r in level_rooms]
+        cats_list = [c for _, c in metas]
+        aspect = fw / fd if fd else 1.0
 
         polygons = cats = None
-        tpl = match_template([c for _, c in metas], fw / fd if fd else 1.0, level, variant=variant)
+        if multi:
+            cands = [t for t in match_templates(cats_list, aspect, level)
+                     if not _is_polygon_template(t)]
+            tpl = cands[variant % len(cands)] if cands else None
+        else:
+            tpl = match_template(cats_list, aspect, level, variant=variant)
         if tpl is not None:
             try:
                 polygons, cats = apply_template(tpl, metas, fw, fd)
@@ -382,6 +417,8 @@ def generate_floor_plan(program: BuildingProgram, variant: int = 0) -> FloorPlan
                 polygons = None
         if polygons is None:
             polygons, cats = _zoned_polygons(metas, fw, fd)
+        if multi:
+            _normalize_footprint(polygons, fw, fd)
 
         walls, owners = _walls_from_rooms(polygons)
         openings = _place_openings(walls, owners, polygons, cats, level, fd)

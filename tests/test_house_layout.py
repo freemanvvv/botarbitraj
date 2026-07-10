@@ -432,3 +432,60 @@ def test_count_template_variants_and_variant_changes_geometry(monkeypatch):
     p0 = {rp.id: rp.polygon for rp in generate_floor_plan(program, variant=0).storeys[0].rooms}
     p1 = {rp.id: rp.polygon for rp in generate_floor_plan(program, variant=1).storeys[0].rooms}
     assert p0["liv"] != p1["liv"]   # variant реально меняет форму
+
+
+def test_multistorey_footprint_identical_across_floors():
+    """Все этажи многоэтажного дома имеют ОДИН внешний контур/габариты —
+    иначе стены не стыкуются по вертикали (жалоба: «формы этажей не
+    совпадают»). Проверяем на составе, где раньше этажи расходились."""
+    from src.bim_agents.contracts import BuildingProgram, Room
+    prog = BuildingProgram(
+        project_name="Дом", storeys=2, footprint={"width_m": 6.85, "depth_m": 6.65},
+        rooms=[
+            Room(id="liv", name="Гостиная", storey=0, area_m2=23, type="IfcSpace:LIVING"),
+            Room(id="kit", name="Кухня", storey=0, area_m2=9, type="IfcSpace:KITCHEN"),
+            Room(id="hall", name="Прихожая", storey=0, area_m2=3, type="IfcSpace:HALLWAY"),
+            Room(id="bath1", name="Санузел 1", storey=0, area_m2=3, type="IfcSpace:BATHROOM"),
+            Room(id="hall2", name="Холл", storey=1, area_m2=8, type="IfcSpace:HALLWAY"),
+            Room(id="bath2", name="Санузел 2", storey=1, area_m2=4, type="IfcSpace:BATHROOM"),
+            Room(id="bed1", name="Спальня 1", storey=1, area_m2=12, type="IfcSpace:BEDROOM"),
+            Room(id="bed2", name="Спальня 2", storey=1, area_m2=12, type="IfcSpace:BEDROOM"),
+        ],
+    )
+    fp = generate_floor_plan(prog)
+    dims = []
+    for s in fp.storeys:
+        xs = [p[0] for r in s.rooms for p in r.polygon]
+        ys = [p[1] for r in s.rooms for p in r.polygon]
+        dims.append((round(max(xs) - min(xs), 2), round(max(ys) - min(ys), 2)))
+    assert dims[0] == dims[1], f"этажи имеют разные габариты: {dims}"
+    # и они совпадают с footprint программы
+    assert abs(dims[0][0] - 6.85) < 0.05 and abs(dims[0][1] - 6.65) < 0.05
+
+
+def test_snap_to_norms_reduces_violations():
+    """«Исправить по нормам» поднимает площади/габариты — число нарушений
+    резко падает (тесные комнаты из примера пользователя)."""
+    from src.bim_agents.contracts import BuildingProgram, Room
+    from src.house_norms import snap_program_to_norms
+    prog = BuildingProgram(
+        project_name="Тесный", storeys=1, footprint={"width_m": 6.0, "depth_m": 6.0},
+        rooms=[
+            Room(id="liv", name="Гостиная", storey=0, area_m2=23, type="IfcSpace:LIVING"),
+            Room(id="kit", name="Кухня", storey=0, area_m2=2.8, type="IfcSpace:KITCHEN"),
+            Room(id="hall", name="Прихожая", storey=0, area_m2=0.7, type="IfcSpace:HALLWAY"),
+            Room(id="bath", name="Санузел", storey=0, area_m2=1.1, type="IfcSpace:BATHROOM"),
+        ],
+    )
+    before = len([i for i in validate_house_plan(prog, generate_floor_plan(prog)) if i["severity"] == "error"])
+    fixed = snap_program_to_norms(prog)
+    after = len([i for i in validate_house_plan(fixed, generate_floor_plan(fixed)) if i["severity"] == "error"])
+    assert after < before
+    # у каждой комнаты площадь теперь не ниже её норматива
+    from src.floorplan.norms import get_room_constraints
+    from src.house_norms import normalize_room_type
+    for r in fixed.rooms:
+        c = get_room_constraints(normalize_room_type(r.type, r.name))
+        assert r.area_m2 >= c["min_area"] - 0.01
+    # footprint увеличен, пропорции сохранены
+    assert fixed.footprint["width_m"] >= 6.0 and fixed.footprint["depth_m"] >= 6.0

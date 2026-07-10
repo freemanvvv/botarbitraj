@@ -93,6 +93,52 @@ def _walls_touching_room(polygon: list[list[float]], walls: list, tol: float = 0
     return touching
 
 
+def snap_program_to_norms(program):
+    """Готовит BuildingProgram под нормы для кнопки «Исправить по нормам»:
+    поднимает площадь и мин. ширину КАЖДОЙ комнаты до нормативного минимума
+    (с небольшим запасом, чтобы после укладки с учётом стен не свалиться
+    обратно под минимум) и увеличивает footprint так, чтобы комнаты этажа
+    поместились. Возвращает НОВЫЙ program (исходный не меняем).
+
+    Так целенаправленно чинятся самые частые нарушения — «Кухня 2.8 м² <
+    8 м²», «Санузел 0.99 м < 1.2 м»: причина в том, что LLM/шаблон назначил
+    комнатам площади ниже нормы и/или тесный footprint. Оконные/дверные
+    претензии геометрические — их снимает уже сама перегенерация."""
+    prog = program.model_copy(deep=True)
+    for r in prog.rooms:
+        canon = normalize_room_type(r.type, r.name)
+        c = get_room_constraints(canon)
+        need_area = round(c["min_area"] * 1.1, 1)
+        if r.area_m2 < need_area:
+            r.area_m2 = need_area
+        if (r.min_width_m or 0) < c["min_width"]:
+            r.min_width_m = c["min_width"]
+
+    # На этаже комнаты замащивают прямоугольник целиком → площадь этажа ≈
+    # сумма площадей комнат. Берём максимум по этажам + запас на стены и
+    # подгоняем ширину/глубину, сохраняя пропорции footprint.
+    max_floor_area = 0.0
+    for level in range(max(prog.storeys, 1)):
+        s = sum(r.area_m2 for r in prog.rooms if r.storey == level)
+        max_floor_area = max(max_floor_area, s)
+    if max_floor_area > 0:
+        # Запас 1.3: помимо стен/перегородок он даёт комнатам ширину сверх
+        # минимальной площади. Многие ряды делят ширину дома между собой
+        # (3 спальни в ряд), и без запаса каждая упирается ровно в min_width
+        # или чуть ниже — с запасом ширины проходят.
+        target = max_floor_area * 1.3
+        fw = float(prog.footprint.get("width_m", 0) or 0)
+        fd = float(prog.footprint.get("depth_m", 0) or 0)
+        cur = fw * fd
+        if fw > 0 and fd > 0 and cur < target:
+            k = (target / cur) ** 0.5
+            prog.footprint = {"width_m": round(fw * k, 2), "depth_m": round(fd * k, 2)}
+        elif fw <= 0 or fd <= 0:
+            side = round(target ** 0.5, 2)
+            prog.footprint = {"width_m": side, "depth_m": side}
+    return prog
+
+
 def validate_house_plan(program, floor_plan) -> list[dict]:
     """program: bim_agents.contracts.BuildingProgram, floor_plan: FloorPlan.
     Проверяет мин. площадь/ширину по типу, наличие окна у комнат, которым

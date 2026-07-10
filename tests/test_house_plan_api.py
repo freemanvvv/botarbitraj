@@ -441,3 +441,59 @@ def test_apartment_plan_get_rerenders_floors_with_svg(monkeypatch, cleanup_house
     assert len(body["floors"]) == 2
     for f in body["floors"]:
         assert "<svg" in f["svg"]
+
+
+def test_house_plan_labels_start_from_first_floor(monkeypatch):
+    """Ярлык этажа нумеруется с 1 (level 0 → «1-й этаж»): этаж 0 в быту =
+    подвал, поэтому «Этаж 0» вводил в заблуждение."""
+    _mock_llm_json(monkeypatch, _HOUSE_PROGRAM)
+    r = client.post("/api/house/plan", json={
+        "building_kind": "house", "description": "двухэтажный дом", "check_norms": False,
+    })
+    assert r.status_code == 200
+    labels = [f["label"] for f in r.json()["floors"]]
+    assert labels == ["1-й этаж", "2-й этаж"]
+    assert not any("Этаж 0" in l for l in labels)
+
+
+def test_house_fix_norms_reduces_violations_without_llm(monkeypatch):
+    """/api/house/fix-norms поднимает площади/габариты и перегенерирует план
+    БЕЗ обращения к LLM (reuse готового BuildingProgram). Нарушений должно
+    стать меньше, чем в исходном тесном плане."""
+    # LLM специально роняем — эндпоинт не должен его звать.
+    import requests as _rq
+
+    def boom(*a, **k):
+        raise AssertionError("fix-norms не должен вызывать LLM")
+    monkeypatch.setattr(_rq, "post", boom)
+
+    tight_program = {"building_program": {
+        "project_name": "Тесный", "storeys": 1, "footprint": {"width_m": 6.0, "depth_m": 6.0},
+        "ceiling_height_m": 3.0,
+        "rooms": [
+            {"id": "liv", "name": "Гостиная", "storey": 0, "area_m2": 23, "type": "IfcSpace:LIVING"},
+            {"id": "kit", "name": "Кухня", "storey": 0, "area_m2": 2.8, "type": "IfcSpace:KITCHEN"},
+            {"id": "hall", "name": "Прихожая", "storey": 0, "area_m2": 0.7, "type": "IfcSpace:HALLWAY"},
+            {"id": "bath", "name": "Санузел", "storey": 0, "area_m2": 1.1, "type": "IfcSpace:BATHROOM"},
+        ],
+    }}
+
+    # число нарушений исходного плана
+    base = client.post("/api/house/plan", json={
+        "building_kind": "house", "description": "тесный дом", "check_norms": True,
+        "program": tight_program,
+    })
+    assert base.status_code == 200
+    before = len([i for i in base.json()["norms_issues"] if i["severity"] == "error"])
+
+    r = client.post("/api/house/fix-norms", json={"program": tight_program, "check_norms": True})
+    assert r.status_code == 200
+    d = r.json()
+    after = len([i for i in d["norms_issues"] if i["severity"] == "error"])
+    assert after < before
+    # footprint увеличен относительно тесного 6×6
+    fp = d["raw_program"]["building_program"]["footprint"]
+    assert fp["width_m"] >= 6.0 and fp["depth_m"] >= 6.0
+    # площади комнат подняты к минимумам (кухня ≥ 8 м²)
+    kit = next(rm for rm in d["raw_program"]["building_program"]["rooms"] if rm["id"] == "kit")
+    assert kit["area_m2"] >= 8.0

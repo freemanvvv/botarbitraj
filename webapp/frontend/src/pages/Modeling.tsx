@@ -69,6 +69,7 @@ export default function Modeling() {
   const [saveLoading, setSaveLoading] = useState(false);
   const [editing, setEditing] = useState(false);
   const [dxfLoading, setDxfLoading] = useState(false);
+  const [fixLoading, setFixLoading] = useState(false);
 
   const [build3dLoading, setBuild3dLoading] = useState(false);
   const [build3dError, setBuild3dError] = useState("");
@@ -183,6 +184,35 @@ export default function Modeling() {
     const next = ((plan.variant ?? 0) + 1) % vc;
     setMessages(prev => [...prev, { role: "user", content: `🔀 Другой вариант (${next + 1}/${vc})` }]);
     generatePlan(lastDescription, { variant: next, program: plan.raw_program });
+  };
+
+  // Исправить по нормам — правит площади/ширины комнат и footprint под
+  // минимумы КМК/ШНК и перестраивает план (без обращения к LLM).
+  const fixNorms = async () => {
+    if (!plan || planLoading || fixLoading) return;
+    setFixLoading(true);
+    setMessages(prev => [...prev, { role: "user", content: "🛠 Исправить по нормам" }]);
+    try {
+      const res = await fetch(`${API}/api/house/fix-norms`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ program: plan.raw_program, check_norms: checkNorms }),
+      });
+      const d = await res.json();
+      if (!res.ok) throw new Error(d.detail || "Ошибка исправления по нормам");
+      setPlan(d);
+      setPage(0);
+      setSavedPlanId(null);
+      setStats(null); setSelectedFile(null); setRightView("album"); setEditing(false);
+      const errCount = d.norms_issues.filter((i: NormsIssue) => i.severity === "error").length;
+      setMessages(prev => [...prev, { role: "bot", content: errCount > 0
+        ? `🛠 План приведён к нормам (площади и габариты подняты до минимумов КМК/ШНК). Осталось нарушений: ${errCount} — обычно мелкие по ширине прохода/окнам, их можно поправить в «Редактировать».`
+        : "🛠 План приведён к нормам — нарушений не найдено." }]);
+    } catch (e: any) {
+      setMessages(prev => [...prev, { role: "bot", content: `❌ ${e.message}` }]);
+    } finally {
+      setFixLoading(false);
+    }
   };
 
   const handleKeyDown = (e: React.KeyboardEvent) => {
@@ -455,7 +485,7 @@ export default function Modeling() {
                 <div className="pagination">
                   {plan.floors.map((f, i) => (
                     <button key={f.level} className={i === page ? "active" : ""} onClick={() => setPage(i)}>
-                      {f.label.replace("Этаж ", "").replace("Квартира — вход с ", "")}
+                      {f.label.replace("-й этаж", "").replace("Квартира — вход с ", "")}
                     </button>
                   ))}
                 </div>
@@ -463,8 +493,24 @@ export default function Modeling() {
 
               {plan.norms_issues.length > 0 && (
                 <div style={{ marginTop: 12, padding: "8px 12px", borderRadius: 8, background: errCount ? "rgba(255,69,58,0.07)" : "rgba(255,159,10,0.08)", border: `1px solid ${errCount ? "rgba(255,69,58,0.3)" : "rgba(255,159,10,0.25)"}` }}>
-                  <div style={{ fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", marginBottom: 6, color: errCount ? "var(--danger)" : "#ff9f0a" }}>
-                    ⚠️ Нормы: {errCount} ошибок, {warnCount} предупреждений
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <div style={{ fontSize: "0.68rem", fontWeight: 600, textTransform: "uppercase", letterSpacing: "0.06em", color: errCount ? "var(--danger)" : "#ff9f0a" }}>
+                      ⚠️ Нормы: {errCount} ошибок, {warnCount} предупреждений
+                    </div>
+                    {errCount > 0 && plan.building_kind === "house" && !editing && (
+                      <button
+                        onClick={fixNorms}
+                        disabled={planLoading || fixLoading}
+                        title="Поднять площади/ширины комнат и габариты дома до минимумов КМК/ШНК и перестроить план"
+                        style={{
+                          marginLeft: "auto", padding: "4px 12px", borderRadius: 6, border: "none",
+                          background: "var(--accent)", color: "#fff", cursor: "pointer",
+                          fontSize: "0.74rem", fontWeight: 600, fontFamily: "inherit", whiteSpace: "nowrap",
+                        }}
+                      >
+                        {fixLoading ? "⏳ Исправляю..." : "🛠 Исправить по нормам"}
+                      </button>
+                    )}
                   </div>
                   <div style={{ display: "flex", flexDirection: "column", gap: 4, maxHeight: 160, overflowY: "auto" }}>
                     {plan.norms_issues.map((issue, i) => (
