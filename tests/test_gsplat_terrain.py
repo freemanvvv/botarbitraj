@@ -108,3 +108,37 @@ def test_run_terrain_docker_command_shape(tmp_path, monkeypatch):
     assert cmd[0] == "docker" and "run" in cmd
     assert "opendronemap/odm" in cmd
     assert "--project-path" in cmd and "/datasets" in cmd
+
+
+# ── API: выдача файлов меша для браузерного 3D-вьюера ─────────
+
+def test_mesh_file_endpoint_serves_and_guards(tmp_path, monkeypatch):
+    """/api/gsplat/mesh-file отдаёт obj/mtl/текстуру из папки меша и режет
+    path traversal. Задачу вставляем прямо в память пайплайна."""
+    from fastapi.testclient import TestClient
+    from webapp.backend import main
+
+    monkeypatch.setattr(gp, "GSPLAT_DATA_DIR", tmp_path)
+    tex = tmp_path / "job1" / "odm" / "reconstruction" / "odm_texturing"
+    tex.mkdir(parents=True)
+    (tex / "odm_textured_model_geo.obj").write_text("o mesh\nmtllib odm_textured_model_geo.mtl\n")
+    (tex / "odm_textured_model_geo.mtl").write_text("newmtl m\n")
+    (tex / "texture.png").write_bytes(b"\x89PNG")
+    (tmp_path / "secret.txt").write_text("nope")
+
+    gp._jobs["job1"] = {
+        "id": "job1", "logs": [],
+        "output_mesh_obj": str(tex / "odm_textured_model_geo.obj"),
+    }
+    try:
+        c = TestClient(main.app)
+        r = c.get("/api/gsplat/mesh-file/job1/odm_textured_model_geo.obj")
+        assert r.status_code == 200 and "mtllib" in r.text
+        r = c.get("/api/gsplat/mesh-file/job1/texture.png")
+        assert r.status_code == 200 and r.headers["content-type"].startswith("image/png")
+        # path traversal → 404, а не выдача secret.txt
+        r = c.get("/api/gsplat/mesh-file/job1/..%2f..%2f..%2fsecret.txt")
+        assert r.status_code in (400, 404)
+        assert "nope" not in r.text
+    finally:
+        gp._jobs.pop("job1", None)

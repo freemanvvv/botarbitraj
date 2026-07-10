@@ -361,7 +361,10 @@ def _run_terrain(job: dict, job_dir: Path, frames: Path) -> None:
         job["output_ortho"] = str(ortho)
         job["logs"].append(f"[{_ts()}] [ODM] Ортофотоплан: {ortho.name}")
     if mesh_obj:
-        # Меш — это OBJ + MTL + текстуры; упаковываем всю папку texturing в zip.
+        # Меш — это OBJ + MTL + текстуры; папку texturing упаковываем в zip для
+        # скачивания, а сам .obj запоминаем как точку входа для браузерного
+        # 3D-вьюера (three.js OBJLoader грузит .obj/.mtl/текстуры пофайлово).
+        job["output_mesh_obj"] = str(mesh_obj)
         zip_base = job_dir / f"{job['project_name']}_mesh"
         archive = shutil.make_archive(str(zip_base), "zip", root_dir=str(mesh_obj.parent))
         job["output_mesh"] = archive
@@ -410,6 +413,7 @@ def create_job(video_path: str, project_name: str,
         "output_ply": None,
         "output_ortho": None,   # ортофотоплан (.png) — режим terrain
         "output_mesh": None,    # текстурированный меш (.zip) — режим terrain
+        "output_mesh_obj": None,  # .obj для браузерного 3D-вьюера — режим terrain
         "created_at": datetime.now().isoformat(),
         "job_dir": str(job_dir),
     }

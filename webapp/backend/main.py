@@ -1715,6 +1715,8 @@ def gsplat_job_status(job_id: str, log_offset: int = Query(0)):
             "mode": job.get("mode", "object"),
             "output_ortho": job.get("output_ortho"),
             "output_mesh": job.get("output_mesh"),
+            "mesh_obj_name": (Path(job["output_mesh_obj"]).name
+                              if job.get("output_mesh_obj") else None),
             "created_at": job["created_at"],
             "logs": all_logs[log_offset:],
             "log_total": len(all_logs),
@@ -1805,6 +1807,42 @@ def gsplat_serve_mesh(job_id: str):
         raise
     except Exception as e:
         raise _server_error(e, "Ошибка выдачи меша")
+
+
+_MESH_MEDIA = {
+    ".obj": "text/plain", ".mtl": "text/plain",
+    ".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg",
+}
+
+
+@app.get("/api/gsplat/mesh-file/{job_id}/{filename}")
+def gsplat_serve_mesh_file(job_id: str, filename: str):
+    """Отдаёт ОТДЕЛЬНЫЙ файл меша (obj/mtl/текстура) из папки texturing —
+    нужно браузерному three.js-вьюеру, который грузит .obj → .mtl → текстуры
+    пофайлово (в отличие от .zip для скачивания). Отдаём только из каталога
+    самого .obj и только разрешённые расширения (защита от path traversal)."""
+    try:
+        from src.gsplat_pipeline import get_job, GSPLAT_DATA_DIR
+        job = get_job(job_id)
+        if not job:
+            raise HTTPException(404, "Задача не найдена")
+        obj = job.get("output_mesh_obj")
+        if not obj or not Path(obj).exists():
+            raise HTTPException(404, "Меш не найден")
+        base = Path(obj).parent.resolve()
+        # имя файла — только basename, никаких / и ..
+        safe = Path(filename).name
+        target = (base / safe).resolve()
+        if base != target.parent or not target.exists():
+            raise HTTPException(404, "Файл меша не найден")
+        if not str(target).startswith(str(GSPLAT_DATA_DIR.resolve())):
+            raise HTTPException(400, "Недопустимый путь")
+        media = _MESH_MEDIA.get(target.suffix.lower(), "application/octet-stream")
+        return FileResponse(str(target), media_type=media, filename=target.name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _server_error(e, "Ошибка выдачи файла меша")
 
 
 @app.post("/api/gsplat/upload-ply")

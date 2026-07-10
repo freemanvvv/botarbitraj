@@ -1,5 +1,6 @@
 import { useState, useEffect, useRef, useCallback } from "react";
 import SplatViewer from "../components/SplatViewer";
+import MeshViewer from "../components/MeshViewer";
 
 // В проде фронт отдаётся тем же бэкендом → относительный base (origin
 // страницы), иначе localhost↔127.0.0.1 = разные origin и CORS роняет
@@ -24,6 +25,7 @@ interface Job {
   mode?: "object" | "terrain";
   output_ortho?: string | null;
   output_mesh?: string | null;
+  mesh_obj_name?: string | null;
   created_at: string;
 }
 
@@ -84,6 +86,7 @@ export default function GsplatTab() {
   // Viewer state
   const [viewerJob, setViewerJob] = useState<{ jobId: string; filename: string } | null>(null);
   const [models, setModels] = useState<PlyModel[]>([]);
+  const [showMesh, setShowMesh] = useState(false);   // 3D-меш (terrain) грузим лениво по кнопке
 
   // ── Fetch jobs list ──────────────────────────────────────
   const fetchJobs = useCallback(async () => {
@@ -113,6 +116,7 @@ export default function GsplatTab() {
     if (!selectedJob) return;
     logOffsetRef.current = 0;
     setLogs([]);
+    setShowMesh(false);   // при смене задачи не тащим меш предыдущей
 
     const poll = async () => {
       try {
@@ -592,16 +596,39 @@ export default function GsplatTab() {
                       </div>
                     )}
                     {selectedJob.output_mesh && (
-                      <a
-                        href={`${API}/api/gsplat/mesh/${selectedJob.id}`}
-                        style={{
-                          display: "inline-block", padding: "8px 16px", borderRadius: 8,
-                          background: "var(--success)", color: "#fff", fontSize: "0.82rem",
-                          textDecoration: "none", fontWeight: 600,
-                        }}
-                      >
-                        ⬇️ Скачать 3D-меш (.zip: OBJ + текстуры)
-                      </a>
+                      <div style={{ display: "flex", gap: 8, flexWrap: "wrap", marginBottom: 12 }}>
+                        {selectedJob.mesh_obj_name && (
+                          <button
+                            onClick={() => setShowMesh(s => !s)}
+                            style={{
+                              padding: "8px 16px", borderRadius: 8, border: "none", cursor: "pointer",
+                              background: showMesh ? "var(--surface2)" : "var(--accent)",
+                              color: showMesh ? "var(--text)" : "#0f172a",
+                              fontSize: "0.82rem", fontWeight: 600, fontFamily: "inherit",
+                            }}
+                          >
+                            {showMesh ? "🙈 Скрыть 3D" : "🧊 Открыть 3D-меш"}
+                          </button>
+                        )}
+                        <a
+                          href={`${API}/api/gsplat/mesh/${selectedJob.id}`}
+                          style={{
+                            display: "inline-block", padding: "8px 16px", borderRadius: 8,
+                            background: "var(--success)", color: "#fff", fontSize: "0.82rem",
+                            textDecoration: "none", fontWeight: 600,
+                          }}
+                        >
+                          ⬇️ Скачать (.zip: OBJ + текстуры)
+                        </a>
+                      </div>
+                    )}
+                    {showMesh && selectedJob.mesh_obj_name && (
+                      <div style={{
+                        height: 460, borderRadius: 8, overflow: "hidden",
+                        border: "1px solid var(--border)",
+                      }}>
+                        <MeshViewer jobId={selectedJob.id} objName={selectedJob.mesh_obj_name} />
+                      </div>
                     )}
                   </div>
                 )}
