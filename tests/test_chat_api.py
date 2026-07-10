@@ -62,3 +62,38 @@ def test_rag_disabled_no_clarify(monkeypatch):
     d = client.post("/api/chat", json={"message": "привет", "model": MID, "use_rag": False}).json()
     assert d["clarify"] is False
     assert d["rag_used"] is False
+
+
+def test_broad_query_asks_to_narrow_instead_of_summary(monkeypatch):
+    """Запрос совпал с МНОГИМИ разными нормативами без явного лидера →
+    clarify=True (просим сузить), но источники всё равно отданы списком, чтобы
+    пользователь мог выбрать документ."""
+    def search(q):
+        # 5 разных документов, близкие score, ни один не доминирует
+        return [
+            {"text": "требования к зданиям 1", "score": 0.72, "meta": {"doc_type": "ШНК", "number": "2.01.01-11", "title": "Общие", "page_start": 5, "page_end": 5}},
+            {"text": "требования к зданиям 2", "score": 0.71, "meta": {"doc_type": "КМК", "number": "2.08.01-89", "title": "Жилые здания", "page_start": 3, "page_end": 3}},
+            {"text": "требования к зданиям 3", "score": 0.70, "meta": {"doc_type": "ШНК", "number": "2.04.09-07", "title": "Пожарная автоматика", "page_start": 8, "page_end": 8}},
+            {"text": "требования к зданиям 4", "score": 0.69, "meta": {"doc_type": "КМК", "number": "2.01.07-96", "title": "Нагрузки", "page_start": 2, "page_end": 2}},
+            {"text": "требования к зданиям 5", "score": 0.68, "meta": {"doc_type": "ШНК", "number": "2.07.01-03", "title": "Планировка", "page_start": 1, "page_end": 1}},
+        ]
+    _setup(monkeypatch, search, chat_reply="Уточните: жилое или общественное здание?")
+    d = client.post("/api/chat", json={"message": "требования к зданиям", "model": MID, "use_rag": True}).json()
+    assert d["clarify"] is True            # просим сузить, а не «выжимка»
+    assert d["rag_used"] is True
+    assert len(d["rag_chunks"]) >= 4       # список документов для выбора отдан
+
+
+def test_focused_query_answers_without_clarify(monkeypatch):
+    """Есть явный лидер (один документ с большим отрывом) → отвечаем, без
+    уточнения, даже если всплыли пара других документов."""
+    def search(q):
+        return [
+            {"text": "минимальная площадь кухни 8 м2", "score": 0.93, "meta": {"doc_type": "КМК", "number": "2.08.01-89", "title": "Жилые здания", "page_start": 12, "page_end": 12}},
+            {"text": "кухня освещение", "score": 0.90, "meta": {"doc_type": "КМК", "number": "2.08.01-89", "title": "Жилые здания", "page_start": 13, "page_end": 13}},
+            {"text": "прочее", "score": 0.55, "meta": {"doc_type": "ШНК", "number": "2.07.01-03", "title": "Планировка", "page_start": 1, "page_end": 1}},
+        ]
+    _setup(monkeypatch, search)
+    d = client.post("/api/chat", json={"message": "минимальная площадь кухни", "model": MID, "use_rag": True}).json()
+    assert d["clarify"] is False
+    assert d["rag_used"] is True

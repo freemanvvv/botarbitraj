@@ -146,10 +146,12 @@ export default function ChatTab({ onOpenSource }: { onOpenSource?: (num: string,
               <div className={`msg ${m.role}`}>{m.content}</div>
               {m.role === "bot" && useRag && (
                 <div style={{ marginLeft: 8, marginBottom: 8 }}>
-                  {m.ragUsed && m.ragChunks && m.ragChunks.length > 0 ? (
-                    <details style={{ fontSize: "0.75rem", color: "var(--text2)" }}>
+                  {m.ragUsed && m.ragChunks && m.ragChunks.length > 0 && (
+                    <details style={{ fontSize: "0.75rem", color: "var(--text2)" }} open={m.clarify}>
                       <summary style={{ cursor: "pointer", userSelect: "none" }}>
-                        📚 Источники ({m.ragChunks.length})
+                        {m.clarify
+                          ? `🔎 Выберите документ, чтобы сузить (${m.ragChunks.length})`
+                          : `📚 Источники (${m.ragChunks.length})`}
                       </summary>
                       <div style={{ paddingLeft: 12, paddingTop: 4, display: "flex", flexDirection: "column", gap: 3 }}>
                         {m.ragChunks.map((c, j) => (
@@ -172,15 +174,17 @@ export default function ChatTab({ onOpenSource }: { onOpenSource?: (num: string,
                         ))}
                       </div>
                     </details>
-                  ) : m.clarify ? (
-                    <span style={{ fontSize: "0.75rem", color: "var(--accent)" }}>
-                      🔎 Уточните запрос — помогу найти норматив в базе
-                    </span>
-                  ) : m.ragUsed === false && m.ragChunks !== undefined ? (
+                  )}
+                  {m.clarify && (
+                    <div style={{ fontSize: "0.75rem", color: "var(--accent)", marginTop: 4 }}>
+                      🔎 Уточните запрос (тип объекта / аспект / этап) — сузим поиск до нужного свода правил
+                    </div>
+                  )}
+                  {!m.clarify && m.ragUsed === false && m.ragChunks !== undefined && (
                     <span style={{ fontSize: "0.75rem", color: "var(--danger)" }}>
                       ⚠️ Релевантных нормативов не найдено в базе
                     </span>
-                  ) : null}
+                  )}
                 </div>
               )}
             </div>
