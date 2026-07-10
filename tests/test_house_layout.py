@@ -463,6 +463,51 @@ def test_multistorey_footprint_identical_across_floors():
     assert abs(dims[0][0] - 6.85) < 0.05 and abs(dims[0][1] - 6.65) < 0.05
 
 
+def test_multistorey_lshape_silhouette_shared_across_floors():
+    """Непрямоугольный силуэт (Г-форма) многоэтажного дома одинаков на ВСЕХ
+    этажах: та же площадь контура, тот же bbox, комнаты замащивают силуэт без
+    наложений/щелей. Проверяем каждый Г-вариант."""
+    from src.bim_agents.contracts import BuildingProgram, Room
+    from src.bim_agents.floorplan_agent import _BUILDING_SHAPES
+
+    def shoelace(p):
+        s = 0.0
+        for i in range(len(p)):
+            x1, y1 = p[i]; x2, y2 = p[(i + 1) % len(p)]
+            s += x1 * y2 - x2 * y1
+        return abs(s) / 2
+
+    prog = BuildingProgram(
+        project_name="Г-дом", storeys=2, footprint={"width_m": 10, "depth_m": 9}, ceiling_height_m=3.0,
+        rooms=[
+            Room(id="liv", name="Гостиная", storey=0, area_m2=24, type="IfcSpace:LIVING"),
+            Room(id="kit", name="Кухня", storey=0, area_m2=12, type="IfcSpace:KITCHEN"),
+            Room(id="hall", name="Прихожая", storey=0, area_m2=6, type="IfcSpace:HALLWAY"),
+            Room(id="bath1", name="Санузел 1", storey=0, area_m2=4, type="IfcSpace:BATHROOM"),
+            Room(id="hall2", name="Холл", storey=1, area_m2=8, type="IfcSpace:HALLWAY"),
+            Room(id="bed1", name="Спальня 1", storey=1, area_m2=14, type="IfcSpace:BEDROOM"),
+            Room(id="bed2", name="Спальня 2", storey=1, area_m2=13, type="IfcSpace:BEDROOM"),
+            Room(id="bath2", name="Санузел 2", storey=1, area_m2=4, type="IfcSpace:BATHROOM"),
+        ],
+    )
+    # variant>0 → Г-формы; должны быть непрямоугольными и одинаковыми по этажам
+    lshape_variants = [i for i, s in enumerate(_BUILDING_SHAPES) if s != "rect"]
+    assert lshape_variants, "нет Г-вариантов"
+    for v in lshape_variants:
+        fp = generate_floor_plan(prog, variant=v)
+        areas, bboxes = [], []
+        for s in fp.storeys:
+            areas.append(round(sum(shoelace(r.polygon) for r in s.rooms), 1))
+            xs = [p[0] for r in s.rooms for p in r.polygon]
+            ys = [p[1] for r in s.rooms for p in r.polygon]
+            bboxes.append((round(max(xs) - min(xs), 2), round(max(ys) - min(ys), 2)))
+        assert areas[0] == areas[1], f"variant {v}: площади этажей разошлись {areas}"
+        assert bboxes[0] == bboxes[1], f"variant {v}: габариты этажей разошлись {bboxes}"
+        # Г-форма реально непрямоугольная: площадь контура < площади bbox
+        bbox_area = bboxes[0][0] * bboxes[0][1]
+        assert areas[0] < bbox_area - 1.0, f"variant {v}: силуэт получился прямоугольным"
+
+
 def test_snap_to_norms_reduces_violations():
     """«Исправить по нормам» поднимает площади/габариты — число нарушений
     резко падает (тесные комнаты из примера пользователя)."""

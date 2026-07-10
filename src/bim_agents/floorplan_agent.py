@@ -334,6 +334,116 @@ def _place_openings(walls: list[WallPlan], owners: dict, polygons: dict,
     return openings
 
 
+# ─────────────── силуэт здания для многоэтажки (общий на все этажи) ───────────
+
+# Формы застройки: прямоугольник + Г-образные (вырез в одном из 4 углов).
+# ОДИН силуэт выбирается на ВСЁ здание (по variant) и заполняется на каждом
+# этаже — так дом может быть непрямоугольным (частный сектор редко строго
+# «коробкой»), но контур/габариты одинаковы на всех этажах и стены стыкуются
+# по вертикали. variant «🔀 Другой вариант формы» листает эти силуэты.
+_BUILDING_SHAPES = ["rect", "L_tr", "L_tl", "L_br", "L_bl"]
+_NOTCH_FRAC = 0.42  # доля стороны, вырезаемая в углу Г-формы
+
+
+def _shape_regions(shape: str, fw: float, fd: float) -> list[tuple]:
+    """Силуэт → список прямоугольников (x0,y0,x1,y1), объединение которых и
+    есть контур этажа. Г-форма = прямоугольник минус угловой вырез = два
+    прямоугольника. bbox всегда [0,fw]×[0,fd] → габариты этажей совпадают."""
+    nw, nd = round(fw * _NOTCH_FRAC, 4), round(fd * _NOTCH_FRAC, 4)
+    if shape == "L_tr":   # вырез в верхнем-правом углу
+        return [(0.0, 0.0, fw, fd - nd), (0.0, fd - nd, fw - nw, fd)]
+    if shape == "L_tl":   # верхний-левый
+        return [(0.0, 0.0, fw, fd - nd), (nw, fd - nd, fw, fd)]
+    if shape == "L_br":   # нижний-правый
+        return [(0.0, nd, fw, fd), (0.0, 0.0, fw - nw, nd)]
+    if shape == "L_bl":   # нижний-левый
+        return [(0.0, nd, fw, fd), (nw, 0.0, fw, nd)]
+    return [(0.0, 0.0, fw, fd)]  # rect
+
+
+def _tile_region(region_metas: list[tuple], x0: float, y0: float,
+                 x1: float, y1: float) -> dict:
+    """Замащивает прямоугольник региона комнатами (сетка под-рядов + деление
+    ширины ряда, как в зонированном солвере), со смещением на (x0,y0).
+    Возвращает {id: polygon}."""
+    w = x1 - x0
+    polygons: dict = {}
+    for row, ry0, ry1 in _grid_rows(region_metas, y0, y1, w):
+        widths = _row_widths([t[0].area_m2 for t in row],
+                             [t[0].min_width_m for t in row], w)
+        cur = x0
+        for (rm, _cat), ww in zip(row, widths):
+            nx = cur + ww
+            polygons[rm.id] = [[round(cur, 4), round(ry0, 4)], [round(nx, 4), round(ry0, 4)],
+                               [round(nx, 4), round(ry1, 4)], [round(cur, 4), round(ry1, 4)]]
+            cur = nx
+        # последняя комната ряда упирается ровно в x1 (стык рядов по владельцам)
+        polygons[row[-1][0].id][1][0] = polygons[row[-1][0].id][2][0] = round(x1, 4)
+    return polygons
+
+
+def _assign_regions(metas: list[tuple], regions: list[tuple]) -> list[list]:
+    """Раскидывает комнаты по регионам силуэта пропорционально их площади
+    (жадно: комнату — в регион с наибольшим остатком ёмкости). Гарантирует,
+    что ни один регион не пуст (иначе в контуре появится дыра)."""
+    areas = [(x1 - x0) * (y1 - y0) for x0, y0, x1, y1 in regions]
+    remaining = list(areas)
+    buckets: list[list] = [[] for _ in regions]
+    for m in sorted(metas, key=lambda t: -t[0].area_m2):
+        i = max(range(len(regions)), key=lambda k: remaining[k])
+        buckets[i].append(m)
+        remaining[i] -= m[0].area_m2
+    for i, b in enumerate(buckets):
+        if b:
+            continue
+        j = max(range(len(buckets)), key=lambda k: len(buckets[k]))
+        if len(buckets[j]) > 1:
+            m = min(buckets[j], key=lambda t: t[0].area_m2)
+            buckets[j].remove(m)
+            b.append(m)
+    return buckets
+
+
+def _fill_shape(metas: list[tuple], shape: str, fw: float, fd: float, level: int = 0) -> tuple[dict, dict]:
+    """Заполняет силуэт shape комнатами этажа. Для 'rect' — реальная форма из
+    датасета шаблонов (заполняющая прямоугольник, не polygon → одинаковый
+    контур на этажах), иначе зонированный солвер; для Г-форм — раскладка по
+    прямоугольникам-регионам силуэта."""
+    if shape == "rect":
+        cats_list = [c for _, c in metas]
+        cands = [t for t in match_templates(cats_list, fw / fd if fd else 1.0, level)
+                 if not _is_polygon_template(t)]
+        if cands:
+            try:
+                return apply_template(cands[0], metas, fw, fd)
+            except ValueError:
+                pass
+        return _zoned_polygons(metas, fw, fd)
+    regions = _shape_regions(shape, fw, fd)
+    buckets = _assign_regions(metas, regions)
+    polygons, cats = {}, {}
+    for region, bucket in zip(regions, buckets):
+        if not bucket:
+            continue
+        polygons.update(_tile_region(bucket, *region))
+        for rm, cat in bucket:
+            cats[rm.id] = cat
+    return polygons, cats
+
+
+def _building_shapes(program: BuildingProgram) -> list[str]:
+    """Допустимые силуэты для здания. Г-форма требует ≥2 комнат на КАЖДОМ
+    непустом этаже (два региона надо чем-то заполнить); иначе — только 'rect'."""
+    min_rooms = None
+    for lvl in range(program.storeys):
+        n = len([r for r in program.rooms if r.storey == lvl])
+        if n:
+            min_rooms = n if min_rooms is None else min(min_rooms, n)
+    if min_rooms is not None and min_rooms >= 2:
+        return _BUILDING_SHAPES
+    return ["rect"]
+
+
 def _normalize_footprint(polygons: dict, bw: float, bd: float) -> None:
     """Ин-плейс масштабирует полигоны этажа так, чтобы их общий bbox стал
     ровно [0,bw]×[0,bd] — тогда ВСЕ этажи имеют одинаковый внешний контур и
@@ -359,9 +469,12 @@ def _normalize_footprint(polygons: dict, bw: float, bd: float) -> None:
 # ─────────────────────────────── основной вход ──────────────────────────────
 
 def count_template_variants(program: BuildingProgram, limit: int = 10) -> int:
-    """Сколько разных реальных форм подходит под состав комнат (для показа
-    «Вариант k из N» и перелистывания). Берём максимум по этажам — столько
-    раз «перегенерировать» даст новую форму, прежде чем варианты повторятся."""
+    """Сколько разных форм доступно под этот дом (для «Вариант k из N» и
+    перелистывания). Для многоэтажного — число силуэтов здания (общий контур
+    на все этажи). Для одноэтажного — число подходящих реальных форм из
+    датасета шаблонов."""
+    if program.storeys > 1:
+        return len(_building_shapes(program))
     from .layout_templates import match_templates
     fw = program.footprint["width_m"]
     fd = program.footprint["depth_m"]
@@ -386,11 +499,16 @@ def generate_floor_plan(program: BuildingProgram, variant: int = 0) -> FloorPlan
     fd = program.footprint["depth_m"]
     storeys_data = []
     # Многоэтажный дом: у всех этажей ОДИН внешний контур (стены стыкуются по
-    # вертикали). polygon-шаблоны дают реальную, но каждый свою форму (Г-образную
-    # и т.п.) со своим aspect → на разных этажах разные габариты. Поэтому для
-    # >1 этажа берём только заполняющие прямоугольник шаблоны (не polygon), а
-    # итог дополнительно нормируем к одному bbox.
+    # вертикали). Силуэт здания (прямоугольник или Г-форма) выбирается ОДИН
+    # раз на всё здание по variant и заполняется на каждом этаже — форма может
+    # быть непрямоугольной, но одинаковой на всех этажах. Одноэтажный дом
+    # по-прежнему берёт реальные формы из датасета шаблонов (там консистентность
+    # между этажами не нужна).
     multi = program.storeys > 1
+    building_shape = None
+    if multi:
+        shapes = _building_shapes(program)
+        building_shape = shapes[variant % len(shapes)]
 
     for level in range(program.storeys):
         elevation = level * program.ceiling_height_m
@@ -405,20 +523,18 @@ def generate_floor_plan(program: BuildingProgram, variant: int = 0) -> FloorPlan
 
         polygons = cats = None
         if multi:
-            cands = [t for t in match_templates(cats_list, aspect, level)
-                     if not _is_polygon_template(t)]
-            tpl = cands[variant % len(cands)] if cands else None
+            # общий силуэт на всё здание → одинаковый контур на всех этажах
+            polygons, cats = _fill_shape(metas, building_shape, fw, fd, level)
+            _normalize_footprint(polygons, fw, fd)
         else:
             tpl = match_template(cats_list, aspect, level, variant=variant)
-        if tpl is not None:
-            try:
-                polygons, cats = apply_template(tpl, metas, fw, fd)
-            except ValueError:
-                polygons = None
-        if polygons is None:
-            polygons, cats = _zoned_polygons(metas, fw, fd)
-        if multi:
-            _normalize_footprint(polygons, fw, fd)
+            if tpl is not None:
+                try:
+                    polygons, cats = apply_template(tpl, metas, fw, fd)
+                except ValueError:
+                    polygons = None
+            if polygons is None:
+                polygons, cats = _zoned_polygons(metas, fw, fd)
 
         walls, owners = _walls_from_rooms(polygons)
         openings = _place_openings(walls, owners, polygons, cats, level, fd)
