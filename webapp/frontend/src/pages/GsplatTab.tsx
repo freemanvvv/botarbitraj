@@ -16,11 +16,14 @@ interface LlmAnalysis {
 interface Job {
   id: string;
   project_name: string;
-  status: "pending" | "extracting" | "colmap" | "training" | "done" | "error";
+  status: "pending" | "extracting" | "colmap" | "training" | "photogrammetry" | "done" | "error";
   step: string;
   progress: number;
   llm_analysis: LlmAnalysis;
   output_ply: string | null;
+  mode?: "object" | "terrain";
+  output_ortho?: string | null;
+  output_mesh?: string | null;
   created_at: string;
 }
 
@@ -33,21 +36,23 @@ interface PlyModel {
 }
 
 const STATUS_LABEL: Record<string, string> = {
-  pending:    "⏳ Ожидание",
-  extracting: "🎞️ Извлечение кадров",
-  colmap:     "📐 COLMAP",
-  training:   "🧠 Обучение",
-  done:       "✅ Готово",
-  error:      "❌ Ошибка",
+  pending:        "⏳ Ожидание",
+  extracting:     "🎞️ Извлечение кадров",
+  colmap:         "📐 COLMAP",
+  training:       "🧠 Обучение",
+  photogrammetry: "🗺️ Фотограмметрия",
+  done:           "✅ Готово",
+  error:          "❌ Ошибка",
 };
 
 const STATUS_COLOR: Record<string, string> = {
-  pending:    "var(--text2)",
-  extracting: "var(--accent)",
-  colmap:     "#a78bfa",
-  training:   "#f59e0b",
-  done:       "var(--success)",
-  error:      "var(--danger)",
+  pending:        "var(--text2)",
+  extracting:     "var(--accent)",
+  colmap:         "#a78bfa",
+  training:       "#f59e0b",
+  photogrammetry: "#a78bfa",
+  done:           "var(--success)",
+  error:          "var(--danger)",
 };
 
 export default function GsplatTab() {
@@ -56,6 +61,7 @@ export default function GsplatTab() {
   // Upload state
   const [file, setFile] = useState<File | null>(null);
   const [projectName, setProjectName] = useState("");
+  const [mode, setMode] = useState<"object" | "terrain">("object");  // объект (сплаты) / местность (меш)
   const [fps, setFps] = useState(4.0);
   const [trainSteps, setTrainSteps] = useState(7000);   // качество обучения Brush
   const [uploading, setUploading] = useState(false);
@@ -166,6 +172,7 @@ export default function GsplatTab() {
     fd.append("project_name", projectName || file.name);
     fd.append("fps", String(fps));
     fd.append("train_steps", String(trainSteps));
+    fd.append("mode", mode);
     try {
       const r = await fetch(`${API}/api/gsplat/upload`, { method: "POST", body: fd });
       const d = await r.json();
@@ -295,17 +302,56 @@ export default function GsplatTab() {
                 />
               </div>
 
-              <div style={{
-                fontSize: "0.72rem", color: "var(--text2)", lineHeight: 1.6,
-                background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)",
-                borderRadius: 8, padding: "8px 10px", margin: "10px 0",
-              }}>
-                📸 <strong>Как снимать для чёткой 3D-модели:</strong> облёт <strong>по кругу
-                вокруг ОДНОГО объекта</strong> (здание, дом, памятник), держа его в центре;
-                ближе и ниже; 1–2 витка, плавно, перекрытие соседних кадров ~70%.
-                <br />⚠️ Обзорный пролёт района или съёмка с большой высоты дадут «туман» —
-                метод (Gaussian Splatting) для такого не подходит.
+              {/* Режим: объект (сплаты) vs местность (фотограмметрия/меш) */}
+              <div style={{ display: "flex", gap: 6, margin: "10px 0" }}>
+                {([
+                  ["object", "🏛 Объект", "Облёт ОДНОГО объекта → Gaussian Splatting (.ply)"],
+                  ["terrain", "🗺 Местность", "Площадь / съёмка с высоты → фотограмметрия (ортофото + меш)"],
+                ] as [("object" | "terrain"), string, string][]).map(([m, label, hint]) => (
+                  <button
+                    key={m}
+                    onClick={() => setMode(m)}
+                    title={hint}
+                    style={{
+                      flex: 1, padding: "8px 6px", borderRadius: 8, cursor: "pointer",
+                      fontSize: "0.8rem", fontFamily: "inherit", lineHeight: 1.3,
+                      border: `1px solid ${mode === m ? "var(--accent)" : "var(--border)"}`,
+                      background: mode === m ? "var(--accent)" : "var(--bg2)",
+                      color: mode === m ? "#0f172a" : "var(--text2)",
+                      fontWeight: mode === m ? 600 : 400,
+                    }}
+                  >
+                    {label}
+                  </button>
+                ))}
               </div>
+
+              {mode === "object" ? (
+                <div style={{
+                  fontSize: "0.72rem", color: "var(--text2)", lineHeight: 1.6,
+                  background: "rgba(245,158,11,0.08)", border: "1px solid rgba(245,158,11,0.25)",
+                  borderRadius: 8, padding: "8px 10px", margin: "10px 0",
+                }}>
+                  📸 <strong>Как снимать для чёткой 3D-модели:</strong> облёт <strong>по кругу
+                  вокруг ОДНОГО объекта</strong> (здание, дом, памятник), держа его в центре;
+                  ближе и ниже; 1–2 витка, плавно, перекрытие соседних кадров ~70%.
+                  <br />⚠️ Обзорный пролёт района или съёмка с большой высоты дадут «туман» —
+                  метод (Gaussian Splatting) для такого не подходит — переключись на «Местность».
+                </div>
+              ) : (
+                <div style={{
+                  fontSize: "0.72rem", color: "var(--text2)", lineHeight: 1.6,
+                  background: "rgba(56,189,248,0.08)", border: "1px solid rgba(56,189,248,0.25)",
+                  borderRadius: 8, padding: "8px 10px", margin: "10px 0",
+                }}>
+                  🗺 <strong>Режим местности (фотограмметрия, OpenDroneMap):</strong> для
+                  площадей, участков и съёмки с высоты. Снимай <strong>сверху / под наклоном
+                  с перекрытием 60–80%</strong> (галсами, как аэросъёмка). Результат —
+                  <strong> ортофотоплан</strong> (вид сверху, для замеров) и текстурированный
+                  3D-меш. <br />⚙️ Нужен установленный <strong>OpenDroneMap</strong>
+                  (проще всего Docker: <code>docker pull opendronemap/odm</code>).
+                </div>
+              )}
 
               {file && (
                 <>
@@ -334,30 +380,34 @@ export default function GsplatTab() {
                     Подбери FPS под длину ролика (короткий облёт → выше FPS).
                   </div>
 
-                  <label style={{ fontSize: "0.8rem", color: "var(--text2)", display: "block", marginBottom: 6 }}>
-                    Качество обучения (итераций Brush)
-                  </label>
-                  <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
-                    {([["Быстро", 7000], ["Средне", 15000], ["Детально", 30000]] as [string, number][]).map(([label, steps]) => (
-                      <button
-                        key={steps}
-                        onClick={() => setTrainSteps(steps)}
-                        style={{
-                          flex: 1, padding: "6px 4px", borderRadius: 6, cursor: "pointer",
-                          fontSize: "0.75rem", fontFamily: "inherit",
-                          border: `1px solid ${trainSteps === steps ? "var(--accent)" : "var(--border)"}`,
-                          background: trainSteps === steps ? "var(--accent)" : "var(--bg2)",
-                          color: trainSteps === steps ? "#fff" : "var(--text2)",
-                        }}
-                      >
-                        {label}<br /><span style={{ fontSize: "0.65rem", opacity: 0.8 }}>{steps / 1000}k</span>
-                      </button>
-                    ))}
-                  </div>
-                  <div style={{ fontSize: "0.7rem", color: "var(--text3)", marginBottom: 12 }}>
-                    Больше итераций → чётче модель, но дольше (на Mac/Metal
-                    «Детально» — десятки минут).
-                  </div>
+                  {mode === "object" && (
+                    <>
+                      <label style={{ fontSize: "0.8rem", color: "var(--text2)", display: "block", marginBottom: 6 }}>
+                        Качество обучения (итераций Brush)
+                      </label>
+                      <div style={{ display: "flex", gap: 6, marginBottom: 4 }}>
+                        {([["Быстро", 7000], ["Средне", 15000], ["Детально", 30000]] as [string, number][]).map(([label, steps]) => (
+                          <button
+                            key={steps}
+                            onClick={() => setTrainSteps(steps)}
+                            style={{
+                              flex: 1, padding: "6px 4px", borderRadius: 6, cursor: "pointer",
+                              fontSize: "0.75rem", fontFamily: "inherit",
+                              border: `1px solid ${trainSteps === steps ? "var(--accent)" : "var(--border)"}`,
+                              background: trainSteps === steps ? "var(--accent)" : "var(--bg2)",
+                              color: trainSteps === steps ? "#fff" : "var(--text2)",
+                            }}
+                          >
+                            {label}<br /><span style={{ fontSize: "0.65rem", opacity: 0.8 }}>{steps / 1000}k</span>
+                          </button>
+                        ))}
+                      </div>
+                      <div style={{ fontSize: "0.7rem", color: "var(--text3)", marginBottom: 12 }}>
+                        Больше итераций → чётче модель, но дольше (на Mac/Metal
+                        «Детально» — десятки минут).
+                      </div>
+                    </>
+                  )}
                   {uploadError && (
                     <div style={{ color: "var(--danger)", fontSize: "0.8rem", marginBottom: 8 }}>
                       {uploadError}
@@ -516,6 +566,42 @@ export default function GsplatTab() {
                     )}
                     {selectedJob.llm_analysis.error_diagnosis && (
                       <LlmCard title="🔍 Диагностика ошибки" text={selectedJob.llm_analysis.error_diagnosis} color="#ef4444" />
+                    )}
+                  </div>
+                )}
+
+                {/* Результаты режима «Местность»: ортофото + меш */}
+                {selectedJob.mode === "terrain" && selectedJob.status === "done" &&
+                 (selectedJob.output_ortho || selectedJob.output_mesh) && (
+                  <div style={{ background: "var(--surface)", borderRadius: 12, padding: 16 }}>
+                    <h3 style={{ fontSize: "0.9rem", marginBottom: 12, color: "var(--accent)" }}>
+                      🗺 Результаты фотограмметрии
+                    </h3>
+                    {selectedJob.output_ortho && (
+                      <div style={{ marginBottom: 14 }}>
+                        <div style={{ fontSize: "0.8rem", color: "var(--text2)", marginBottom: 6 }}>
+                          Ортофотоплан (вид сверху):
+                        </div>
+                        <a href={`${API}/api/gsplat/ortho/${selectedJob.id}`} target="_blank" rel="noreferrer">
+                          <img
+                            src={`${API}/api/gsplat/ortho/${selectedJob.id}`}
+                            alt="Ортофотоплан"
+                            style={{ maxWidth: "100%", borderRadius: 8, border: "1px solid var(--border)", display: "block" }}
+                          />
+                        </a>
+                      </div>
+                    )}
+                    {selectedJob.output_mesh && (
+                      <a
+                        href={`${API}/api/gsplat/mesh/${selectedJob.id}`}
+                        style={{
+                          display: "inline-block", padding: "8px 16px", borderRadius: 8,
+                          background: "var(--success)", color: "#fff", fontSize: "0.82rem",
+                          textDecoration: "none", fontWeight: 600,
+                        }}
+                      >
+                        ⬇️ Скачать 3D-меш (.zip: OBJ + текстуры)
+                      </a>
                     )}
                   </div>
                 )}

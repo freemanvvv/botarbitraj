@@ -255,15 +255,145 @@ def _train_with_brush(job: dict, job_dir: Path, frames: Path, sparse: Path,
     return _latest_ply(output)
 
 
+# ─── Фотограмметрия местности (OpenDroneMap) ─────────────────
+
+def _find_odm_runner() -> Optional[tuple[str, str]]:
+    """Как запустить OpenDroneMap (фотограмметрия для площадей/съёмки с высоты):
+
+      • ("custom", template) — если задан ODM_CMD (плейсхолдеры {datasets} {project});
+      • ("docker", image)    — если есть docker (образ opendronemap/odm, CPU, без CUDA);
+      • ("native", "odm")    — если в PATH есть нативный бинарь odm;
+      • None                 — ничего не найдено.
+
+    Docker — основной путь: ODM ставится одной командой (docker pull
+    opendronemap/odm) и работает на Mac/Apple Silicon без NVIDIA."""
+    custom = os.environ.get("ODM_CMD")
+    if custom:
+        return ("custom", custom)
+    if shutil.which("docker"):
+        return ("docker", os.environ.get("ODM_IMAGE", "opendronemap/odm"))
+    if shutil.which("odm"):
+        return ("native", "odm")
+    return None
+
+
+def _find_output(base: Path, names: list[str]) -> Optional[Path]:
+    """Первый существующий из кандидатов имён под base (нерекурсивно, затем поиск)."""
+    for n in names:
+        p = base / n
+        if p.exists():
+            return p
+    for n in names:
+        hits = list(base.rglob(n)) if base.exists() else []
+        if hits:
+            return hits[0]
+    return None
+
+
+def _run_terrain(job: dict, job_dir: Path, frames: Path) -> None:
+    """Фотограмметрия местности через OpenDroneMap: кадры → ортофотоплан (PNG)
+    + текстурированный меш (OBJ+текстуры, отдаём .zip). Подходит для площадей и
+    съёмки с высоты, где Gaussian Splatting даёт «туман».
+
+    Пишет пути результатов в job["output_ortho"] / job["output_mesh"]. Кидает
+    RuntimeError, если ODM не найден или не создал ни ортофото, ни меш."""
+    _hdr(job, "ШАГ 2/2: Фотограмметрия местности (OpenDroneMap)")
+    job["status"] = "photogrammetry"
+    job["progress"] = 25
+
+    runner = _find_odm_runner()
+    if not runner:
+        job["logs"].append(
+            f"[{_ts()}] [ODM] OpenDroneMap не найден. Установите его для режима «Местность»:"
+        )
+        job["logs"].append("           • проще всего через Docker:  docker pull opendronemap/odm")
+        job["logs"].append("           • Docker работает на Mac/Apple Silicon (CPU, без NVIDIA)")
+        job["logs"].append("           • свой запуск можно задать: ODM_CMD='...{datasets}...{project}...'")
+        raise RuntimeError(
+            "OpenDroneMap не установлен. Для режима «Местность» установите Docker и "
+            "выполните `docker pull opendronemap/odm` (работает на Mac без NVIDIA), "
+            "либо задайте ODM_CMD со своей командой запуска."
+        )
+
+    kind, tool = runner
+    odm_root = job_dir / "odm"
+    project = "reconstruction"
+    img_dir = odm_root / project / "images"
+    img_dir.mkdir(parents=True, exist_ok=True)
+
+    # ODM ждёт снимки в <datasets>/<project>/images. Docker монтирует каталог,
+    # поэтому кадры КОПИРУЕМ (симлинки за пределами mount внутри контейнера
+    # не видны).
+    copied = 0
+    for f in sorted(frames.glob("*.jpg")):
+        dst = img_dir / f.name
+        if not dst.exists():
+            shutil.copy2(f, dst)
+        copied += 1
+    job["logs"].append(f"[{_ts()}] [ODM] Кадров подготовлено: {copied} → {img_dir}")
+
+    # --orthophoto-png: получить ортофото в PNG (легко показать в браузере);
+    # --skip-report: не тратить время на PDF-отчёт. Переопределяемо через ODM_OPTS.
+    opts = shlex.split(os.environ.get("ODM_OPTS", "--orthophoto-png --skip-report"))
+
+    if kind == "docker":
+        cmd = ["docker", "run", "--rm",
+               "-v", f"{odm_root}:/datasets",
+               tool, "--project-path", "/datasets", project] + opts
+    elif kind == "native":
+        cmd = [tool, "--project-path", str(odm_root), project] + opts
+    else:  # custom template
+        cmd_str = tool.replace("{datasets}", str(odm_root)).replace("{project}", project)
+        cmd = shlex.split(cmd_str)
+
+    job["logs"].append(f"[{_ts()}] [ODM] Запуск фотограмметрии (может идти долго на CPU)...")
+    job["progress"] = 35
+    rc, _ = _run(job, cmd, timeout=21600)  # до 6 часов: ODM на CPU медленный
+    job["progress"] = 85
+
+    proj_dir = odm_root / project
+    ortho = _find_output(proj_dir / "odm_orthophoto",
+                         ["odm_orthophoto.png", "odm_orthophoto.tif"])
+    mesh_obj = _find_output(proj_dir / "odm_texturing",
+                            ["odm_textured_model_geo.obj", "odm_textured_model.obj"])
+
+    if ortho:
+        job["output_ortho"] = str(ortho)
+        job["logs"].append(f"[{_ts()}] [ODM] Ортофотоплан: {ortho.name}")
+    if mesh_obj:
+        # Меш — это OBJ + MTL + текстуры; упаковываем всю папку texturing в zip.
+        zip_base = job_dir / f"{job['project_name']}_mesh"
+        archive = shutil.make_archive(str(zip_base), "zip", root_dir=str(mesh_obj.parent))
+        job["output_mesh"] = archive
+        job["logs"].append(f"[{_ts()}] [ODM] Текстурированный меш: {Path(archive).name}")
+
+    if not (ortho or mesh_obj):
+        raise RuntimeError(
+            f"OpenDroneMap завершился (rc={rc}), но не создал ни ортофото, ни меш. "
+            "Обычно причина в самих кадрах: нужна съёмка С ПЕРЕКРЫТИЕМ (соседние "
+            "кадры пересекаются на 60–80%), сверху вниз или под наклоном. Проверьте "
+            "лог ODM выше."
+        )
+
+    job["progress"] = 95
+
+
 # ─── Public API ───────────────────────────────────────────────
 
 def create_job(video_path: str, project_name: str,
-               fps: float = 1.0, model_id: str = None, train_steps: int = 7000) -> str:
+               fps: float = 1.0, model_id: str = None, train_steps: int = 7000,
+               mode: str = "object") -> str:
     job_id = str(uuid.uuid4())[:8]
     job_dir = GSPLAT_DATA_DIR / job_id
     job_dir.mkdir(parents=True)
 
     mid = model_id or list(MODELS.values())[0]["id"]
+    # mode:
+    #   "object"  — облёт ОДНОГО объекта → Gaussian Splatting (.ply, сплаты);
+    #   "terrain" — съёмка ПЛОЩАДИ / с высоты → фотограмметрия OpenDroneMap
+    #               (ортофотоплан + текстурированный меш). GS для площадей даёт
+    #               «туман», поэтому для местности идём фотограмметрией.
+    mode = mode if mode in ("object", "terrain") else "object"
     job = {
         "id": job_id,
         "project_name": project_name,
@@ -271,12 +401,15 @@ def create_job(video_path: str, project_name: str,
         "fps": fps,
         "train_steps": train_steps,   # число итераций обучения Brush (качество)
         "model_id": mid,
+        "mode": mode,
         "status": "pending",
         "step": "Ожидание запуска",
         "progress": 0,
         "logs": [],
         "llm_analysis": {},
         "output_ply": None,
+        "output_ortho": None,   # ортофотоплан (.png) — режим terrain
+        "output_mesh": None,    # текстурированный меш (.zip) — режим terrain
         "created_at": datetime.now().isoformat(),
         "job_dir": str(job_dir),
     }
@@ -344,7 +477,8 @@ def _pipeline(job_id: str):
         # ══════════════════════════════════════════════════
         job["status"] = "extracting"
         job["progress"] = 5
-        _hdr(job, "ШАГ 1/3: Извлечение кадров (ffmpeg)")
+        _total_steps = 2 if job.get("mode") == "terrain" else 3
+        _hdr(job, f"ШАГ 1/{_total_steps}: Извлечение кадров (ffmpeg)")
 
         fps = job["fps"]
         vp = Path(job["video_path"])
@@ -374,6 +508,33 @@ def _pipeline(job_id: str):
                 f"Слишком мало кадров ({frame_count}). "
                 "Увеличьте FPS извлечения или проверьте видеофайл."
             )
+
+        # ══════════════════════════════════════════════════
+        # Развилка по режиму: «Местность» уходит в фотограмметрию
+        # (OpenDroneMap) вместо COLMAP→Brush, минуя весь GS-путь.
+        # ══════════════════════════════════════════════════
+        if job.get("mode") == "terrain":
+            _run_terrain(job, job_dir, frames)
+            report = _llm(
+                f"""Фотограмметрия местности (OpenDroneMap) завершена.
+Кадров использовано: {frame_count}
+Результат: ортофотоплан (вид сверху) и текстурированный 3D-меш.
+
+Напиши краткий итоговый отчёт по-русски (3-4 предложения): что получено,
+как это использовать (замеры площади по ортофото, просмотр меша в Blender/
+MeshLab) и рекомендации по качеству съёмки для площадей.""",
+                mid, max_tokens=500,
+            )
+            job["llm_analysis"]["report"] = report
+            job["logs"].append("")
+            job["logs"].append("[LLM] ФИНАЛЬНЫЙ ОТЧЁТ:")
+            job["logs"].append(report)
+            job["status"] = "done"
+            job["step"] = "Готово"
+            job["progress"] = 100
+            job["logs"].append("")
+            job["logs"].append("✅ Фотограмметрия местности завершена!")
+            return
 
         # LLM: оценка входных данных и рекомендации
         job["logs"].append("")

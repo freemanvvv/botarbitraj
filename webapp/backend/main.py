@@ -1647,8 +1647,12 @@ async def gsplat_upload(
     fps: float = Form(1.0),
     model: str = Form(""),
     train_steps: int = Form(7000),
+    mode: str = Form("object"),
 ):
-    """Загружает видеофайл и создаёт задачу пайплайна."""
+    """Загружает видеофайл и создаёт задачу пайплайна.
+
+    mode: "object" — Gaussian Splatting (облёт одного объекта);
+          "terrain" — фотограмметрия OpenDroneMap (площадь/съёмка с высоты)."""
     allowed_ext = {".mp4", ".mov", ".avi", ".mkv", ".webm"}
     suffix = Path(file.filename).suffix.lower()
     if suffix not in allowed_ext:
@@ -1669,6 +1673,7 @@ async def gsplat_upload(
             fps=max(0.1, min(fps, 10.0)),
             model_id=model_id,
             train_steps=max(1000, min(train_steps, 30000)),
+            mode=mode if mode in ("object", "terrain") else "object",
         )
         start_job(job_id)
         return {"job_id": job_id, "message": "Пайплайн запущен"}
@@ -1707,6 +1712,9 @@ def gsplat_job_status(job_id: str, log_offset: int = Query(0)):
             "progress": job["progress"],
             "llm_analysis": job["llm_analysis"],
             "output_ply": job.get("output_ply"),
+            "mode": job.get("mode", "object"),
+            "output_ortho": job.get("output_ortho"),
+            "output_mesh": job.get("output_mesh"),
             "created_at": job["created_at"],
             "logs": all_logs[log_offset:],
             "log_total": len(all_logs),
@@ -1756,6 +1764,47 @@ def gsplat_serve_ply(job_id: str, filename: str):
         raise
     except Exception as e:
         raise _server_error(e, "Ошибка выдачи файла модели")
+
+
+def _gsplat_output_file(job_id: str, key: str):
+    """Общая выдача файла-результата задачи (ортофото / меш) с защитой от
+    path traversal — по образцу gsplat_serve_ply."""
+    from src.gsplat_pipeline import get_job, GSPLAT_DATA_DIR
+    job = get_job(job_id)
+    if not job:
+        raise HTTPException(404, "Задача не найдена")
+    path_str = job.get(key)
+    if not path_str or not Path(path_str).exists():
+        raise HTTPException(404, "Файл не найден")
+    path = Path(path_str).resolve()
+    if not str(path).startswith(str(GSPLAT_DATA_DIR.resolve())):
+        raise HTTPException(400, "Недопустимый путь")
+    return path
+
+
+@app.get("/api/gsplat/ortho/{job_id}")
+def gsplat_serve_ortho(job_id: str):
+    """Ортофотоплан (PNG) для режима «Местность»."""
+    try:
+        path = _gsplat_output_file(job_id, "output_ortho")
+        media = "image/png" if path.suffix.lower() == ".png" else "image/tiff"
+        return FileResponse(str(path), media_type=media, filename=path.name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _server_error(e, "Ошибка выдачи ортофотоплана")
+
+
+@app.get("/api/gsplat/mesh/{job_id}")
+def gsplat_serve_mesh(job_id: str):
+    """Текстурированный меш (.zip: OBJ+MTL+текстуры) для режима «Местность»."""
+    try:
+        path = _gsplat_output_file(job_id, "output_mesh")
+        return FileResponse(str(path), media_type="application/zip", filename=path.name)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise _server_error(e, "Ошибка выдачи меша")
 
 
 @app.post("/api/gsplat/upload-ply")
